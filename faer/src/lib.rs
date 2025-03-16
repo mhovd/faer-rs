@@ -28,6 +28,8 @@
 //! matrix addition, `-` for subtraction, `*` for either scalar or matrix multiplication depending
 //! on the types of the operands.
 //!
+//! a beginners guide to `faer` is available [here](crate::doc)
+//!
 //! ## example
 //! ```
 //! use faer::{Mat, Scale, mat};
@@ -1234,3 +1236,5 @@ mod into_range {
 mod sort;
 
 pub use {dyn_stack, reborrow};
+
+pub mod doc;
