@@ -3,6 +3,7 @@ use crate::internal_prelude::*;
 use crate::{Idx, IdxInc, TryReserveError};
 use core::ops::{Index, IndexMut};
 use faer_traits::Real;
+use std::vec::Vec;
 
 /// heap allocated resizable column vector.
 ///
@@ -573,5 +574,87 @@ impl<'short, T, Rows: Shape> ReborrowMut<'short> for Col<T, Rows> {
 	#[inline]
 	fn rb_mut(&'short mut self) -> Self::Target {
 		self.as_mut()
+	}
+}
+
+impl<T> From<Vec<T>> for Col<T> {
+	#[inline]
+	fn from(vec: Vec<T>) -> Self {
+		let n = vec.len();
+		let column = Col::from_fn(n, |i| unsafe { std::ptr::read(&vec[i as usize]) });
+		std::mem::forget(vec);
+		column
+	}
+}
+
+impl<T> From<Col<T>> for Vec<T> {
+	#[inline]
+	fn from(mut col: Col<T>) -> Self {
+		let n = col.nrows();
+		let mut vec = Vec::with_capacity(n);
+		for i in 0..n {
+			unsafe {
+				let ptr = col.ptr_inbounds_at_mut(i);
+				vec.push(std::ptr::read(ptr));
+			}
+		}
+		std::mem::forget(col);
+		vec
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_from_vec() {
+		// Test with integers
+		let vec = vec![1, 2, 3, 4, 5];
+		let col = Col::from(vec);
+
+		// Check dimensions
+		assert_eq!(col.nrows(), 5);
+		assert_eq!(col.ncols(), 1);
+
+		// Check elements
+		for i in 0..5 {
+			assert_eq!(col[i], i + 1);
+		}
+
+		// Test with floating point
+		let vec = vec![1.0, 2.5, 3.7, 4.2, 5.9];
+		let col = Col::from(vec);
+
+		// Check dimensions
+		assert_eq!(col.nrows(), 5);
+		assert_eq!(col.ncols(), 1);
+
+		// Check elements
+		assert_eq!(col[0], 1.0);
+		assert_eq!(col[1], 2.5);
+		assert_eq!(col[2], 3.7);
+		assert_eq!(col[3], 4.2);
+		assert_eq!(col[4], 5.9);
+	}
+
+	#[test]
+	fn test_empty_vec() {
+		let vec: Vec<f64> = vec![];
+		let col = Col::from(vec);
+
+		assert_eq!(col.nrows(), 0);
+		assert_eq!(col.ncols(), 1);
+	}
+
+	#[test]
+	fn test_into_vec() {
+		let col = Col::from_fn(5, |i| i as f64);
+		let vec: Vec<f64> = col.into();
+
+		assert_eq!(vec.len(), 5);
+		for i in 0..5 {
+			assert_eq!(vec[i], i as f64);
+		}
 	}
 }
