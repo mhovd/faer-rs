@@ -2,7 +2,6 @@ use crate::internal_prelude::*;
 use crate::{ContiguousFwd, Idx, IdxInc, TryReserveError};
 use core::ops::{Index, IndexMut};
 use faer_traits::Real;
-use std::vec::Vec;
 
 use super::RowIndex;
 
@@ -556,9 +555,10 @@ impl<'short, T, Cols: Shape> ReborrowMut<'short> for Row<T, Cols> {
 	}
 }
 
-impl<T> From<Vec<T>> for Row<T> {
+#[cfg(feature = "std")]
+impl<T> From<std::vec::Vec<T>> for Row<T> {
 	#[inline]
-	fn from(vec: Vec<T>) -> Self {
+	fn from(vec: std::vec::Vec<T>) -> Self {
 		let n = vec.len();
 		let row = Row::from_fn(n, |i| unsafe { std::ptr::read(&vec[i as usize]) });
 		std::mem::forget(vec);
@@ -566,11 +566,12 @@ impl<T> From<Vec<T>> for Row<T> {
 	}
 }
 
-impl<T> From<Row<T>> for Vec<T> {
+#[cfg(feature = "std")]
+impl<T> From<Row<T>> for std::vec::Vec<T> {
 	#[inline]
 	fn from(mut row: Row<T>) -> Self {
 		let n = row.ncols();
-		let mut vec = Vec::with_capacity(n);
+		let mut vec = std::vec::Vec::with_capacity(n);
 		for i in 0..n {
 			unsafe {
 				let ptr = row.ptr_inbounds_at_mut(i);
@@ -583,6 +584,7 @@ impl<T> From<Row<T>> for Vec<T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod tests {
 	use super::*;
 

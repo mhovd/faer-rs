@@ -3,7 +3,6 @@ use crate::internal_prelude::*;
 use crate::{Idx, IdxInc, TryReserveError};
 use core::ops::{Index, IndexMut};
 use faer_traits::Real;
-use std::vec::Vec;
 
 /// heap allocated resizable column vector.
 ///
@@ -577,9 +576,10 @@ impl<'short, T, Rows: Shape> ReborrowMut<'short> for Col<T, Rows> {
 	}
 }
 
-impl<T> From<Vec<T>> for Col<T> {
+#[cfg(feature = "std")]
+impl<T> From<std::vec::Vec<T>> for Col<T> {
 	#[inline]
-	fn from(vec: Vec<T>) -> Self {
+	fn from(vec: std::vec::Vec<T>) -> Self {
 		let n = vec.len();
 		let column = Col::from_fn(n, |i| unsafe { std::ptr::read(&vec[i as usize]) });
 		std::mem::forget(vec);
@@ -587,11 +587,12 @@ impl<T> From<Vec<T>> for Col<T> {
 	}
 }
 
-impl<T> From<Col<T>> for Vec<T> {
+#[cfg(feature = "std")]
+impl<T> From<Col<T>> for std::vec::Vec<T> {
 	#[inline]
 	fn from(mut col: Col<T>) -> Self {
 		let n = col.nrows();
-		let mut vec = Vec::with_capacity(n);
+		let mut vec = std::vec::Vec::with_capacity(n);
 		for i in 0..n {
 			unsafe {
 				let ptr = col.ptr_inbounds_at_mut(i);
@@ -604,6 +605,7 @@ impl<T> From<Col<T>> for Vec<T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod tests {
 	use super::*;
 
