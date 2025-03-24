@@ -1402,8 +1402,7 @@ impl<'short, T, Rows: Shape, Cols: Shape> ReborrowMut<'short> for Mat<T, Rows, C
 impl<T, Cols: Shape> Mat<T, usize, Cols> {
 	/// inserts a row at the end of the matrix
 	/// # panics
-	/// The function panics if the number of columns in the row does not match the number of columns
-	/// in the matrix
+	/// The function panics if the number of columns in the row does not match the number of columns in the matrix
 	pub fn push_row(&mut self, row: RowRef<'_, T, Cols>)
 	where
 		T: Clone,
@@ -1422,8 +1421,7 @@ impl<T, Cols: Shape> Mat<T, usize, Cols> {
 impl<T, Rows: Shape> Mat<T, Rows, usize> {
 	/// inserts a col at the end of the matrix
 	/// # panics
-	/// The function panics if the number of rows in the col does not match the number of rows in
-	/// the matrix
+	/// The function panics if the number of rows in the col does not match the number of rows in the matrix
 	pub fn push_col(&mut self, col: ColRef<'_, T, Rows>)
 	where
 		T: Clone,
@@ -1436,21 +1434,6 @@ impl<T, Rows: Shape> Mat<T, Rows, usize> {
 		);
 
 		self.resize_with(self.nrows(), self.ncols() + 1, |i, _| col[i].clone());
-	}
-}
-
-impl<T, Rows: Shape, Cols: Shape> Mat<T, Rows, Cols>
-where
-	T: RealField,
-{
-	/// see [MatRef::min]
-	pub fn min(self) -> Option<T> {
-		MatRef::internal_min(self.as_dyn())
-	}
-
-	/// see [MatRef::min]
-	pub fn max(self) -> Option<T> {
-		MatRef::internal_max(self.as_dyn())
 	}
 }
 
@@ -1580,35 +1563,5 @@ mod tests {
 		let col = col![4.0, 4.0, 4.0, 4.0];
 
 		m.push_col(col.as_ref());
-	}
-
-	#[test]
-	fn test_min() {
-		use crate::Mat;
-		let m = mat![
-			[1.0, 5.0, 3.0],
-			[4.0, 2.0, 9.0],
-			[7.0, 8.0, 6.0], //
-		];
-
-		assert_eq!(m.min(), Some(1.0));
-
-		let empty: Mat<f64> = Mat::new();
-		assert_eq!(empty.min(), None);
-	}
-
-	#[test]
-	fn test_max() {
-		use crate::Mat;
-		let m = mat![
-			[1.0, 5.0, 3.0],
-			[4.0, 2.0, 9.0],
-			[7.0, 8.0, 6.0], //
-		];
-
-		assert_eq!(m.max(), Some(9.0));
-
-		let empty: Mat<f64> = Mat::new();
-		assert_eq!(empty.max(), None);
 	}
 }
