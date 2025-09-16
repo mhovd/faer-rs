@@ -3,7 +3,7 @@ use crate::{assert, get_global_parallelism};
 use alloc::vec;
 use alloc::vec::Vec;
 use dyn_stack::MemBuffer;
-use faer_traits::math_utils;
+use faer_traits::{ComplexConj, math_utils};
 use linalg::svd::ComputeSvdVectors;
 
 pub use linalg::cholesky::ldlt::factor::LdltError;
@@ -225,29 +225,29 @@ pub trait Solve<T: ComplexField>: SolveCore<T> {
 	}
 }
 
-impl<C: Conjugate> MatRef<'_, C> {
+impl<C: Conjugate, Inner: for<'short> Reborrow<'short, Target = mat::Ref<'short, C>>> mat::generic::Mat<Inner> {
 	#[track_caller]
 	/// returns the $LU$ decomposition of `self` with partial (row) pivoting
 	pub fn partial_piv_lu(&self) -> PartialPivLu<C::Canonical> {
-		PartialPivLu::new(self.as_mat_ref())
+		PartialPivLu::new(self.rb())
 	}
 
 	#[track_caller]
 	/// returns the $LU$ decomposition of `self` with full pivoting
 	pub fn full_piv_lu(&self) -> FullPivLu<C::Canonical> {
-		FullPivLu::new(self.as_mat_ref())
+		FullPivLu::new(self.rb())
 	}
 
 	#[track_caller]
 	/// returns the $QR$ decomposition of `self`
 	pub fn qr(&self) -> Qr<C::Canonical> {
-		Qr::new(self.as_mat_ref())
+		Qr::new(self.rb())
 	}
 
 	#[track_caller]
 	/// returns the $QR$ decomposition of `self` with column pivoting
 	pub fn col_piv_qr(&self) -> ColPivQr<C::Canonical> {
-		ColPivQr::new(self.as_mat_ref())
+		ColPivQr::new(self.rb())
 	}
 
 	#[track_caller]
@@ -255,7 +255,7 @@ impl<C: Conjugate> MatRef<'_, C> {
 	///
 	/// singular values are nonnegative and sorted in nonincreasing order
 	pub fn svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		Svd::new(self.as_mat_ref())
+		Svd::new(self.rb())
 	}
 
 	#[track_caller]
@@ -263,25 +263,25 @@ impl<C: Conjugate> MatRef<'_, C> {
 	///
 	/// singular values are nonnegative and sorted in nonincreasing order
 	pub fn thin_svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		Svd::new_thin(self.as_mat_ref())
+		Svd::new_thin(self.rb())
 	}
 
 	#[track_caller]
 	/// returns the $L L^\top$ decomposition of `self`
 	pub fn llt(&self, side: Side) -> Result<Llt<C::Canonical>, LltError> {
-		Llt::new(self.as_mat_ref(), side)
+		Llt::new(self.rb(), side)
 	}
 
 	#[track_caller]
 	/// returns the $L D L^\top$ decomposition of `self`
 	pub fn ldlt(&self, side: Side) -> Result<Ldlt<C::Canonical>, LdltError> {
-		Ldlt::new(self.as_mat_ref(), side)
+		Ldlt::new(self.rb(), side)
 	}
 
 	#[track_caller]
-	/// returns the bunch-kaufman decomposition of `self`
+	/// returns the $LBL^\top$ decomposition of `self`
 	pub fn lblt(&self, side: Side) -> Lblt<C::Canonical> {
-		Lblt::new(self.as_mat_ref(), side)
+		Lblt::new(self.rb(), side)
 	}
 
 	#[track_caller]
@@ -289,7 +289,7 @@ impl<C: Conjugate> MatRef<'_, C> {
 	///
 	/// eigenvalues sorted in nondecreasing order
 	pub fn self_adjoint_eigen(&self, side: Side) -> Result<SelfAdjointEigen<C::Canonical>, EvdError> {
-		SelfAdjointEigen::new(self.as_mat_ref(), side)
+		SelfAdjointEigen::new(self.rb(), side)
 	}
 
 	#[track_caller]
@@ -325,7 +325,7 @@ impl<C: Conjugate> MatRef<'_, C> {
 			Ok(s.column_vector().iter().map(|x| real(x)).collect())
 		}
 
-		imp(self.as_mat_ref().canonical(), side)
+		imp(self.rb().canonical(), side)
 	}
 
 	#[track_caller]
@@ -360,319 +360,142 @@ impl<C: Conjugate> MatRef<'_, C> {
 			Ok(s.column_vector().iter().map(|x| real(x)).collect())
 		}
 
-		imp(self.as_mat_ref().canonical())
+		imp(self.rb().canonical())
 	}
 }
 
-impl<T: RealField> MatRef<'_, T> {
+impl<C: Conjugate> MatRef<'_, C> {
 	#[track_caller]
-	/// returns the eigendecomposition of `self`
-	pub fn eigen_from_real(&self) -> Result<Eigen<T>, EvdError> {
-		Eigen::new_from_real(self.as_mat_ref())
+	fn eigen_imp(&self) -> Result<Eigen<Real<C>>, EvdError> {
+		if const { C::Canonical::IS_REAL } {
+			Eigen::new_from_real(unsafe { crate::hacks::coerce(*self) })
+		} else if const { C::IS_CANONICAL } {
+			Eigen::new(unsafe { crate::hacks::coerce::<_, MatRef<'_, Complex<Real<C>>>>(*self) })
+		} else {
+			Eigen::new(unsafe { crate::hacks::coerce::<_, MatRef<'_, ComplexConj<Real<C>>>>(*self) })
+		}
 	}
 
 	#[track_caller]
-	/// returns the eigenvalues of `self`
-	pub fn eigenvalues_from_real(&self) -> Result<Vec<Complex<T>>, EvdError> {
+	fn eigenvalues_imp(&self) -> Result<Vec<Complex<Real<C>>>, EvdError> {
 		let par = get_global_parallelism();
 
-		let A = self.as_mat_ref();
-		assert!(A.nrows() == A.ncols());
-		let n = A.nrows();
+		if const { C::Canonical::IS_REAL } {
+			let A = unsafe { crate::hacks::coerce::<_, MatRef<'_, Real<C>>>(*self) };
+			assert!(A.nrows() == A.ncols());
+			let n = A.nrows();
 
-		let mut s_re = Diag::<T>::zeros(n);
-		let mut s_im = Diag::<T>::zeros(n);
+			let mut s_re = Diag::<Real<C>>::zeros(n);
+			let mut s_im = Diag::<Real<C>>::zeros(n);
 
-		linalg::evd::evd_real(
-			A,
-			s_re.as_mut(),
-			s_im.as_mut(),
-			None,
-			None,
-			par,
-			MemStack::new(&mut MemBuffer::new(linalg::evd::evd_scratch::<T>(
-				n,
-				linalg::evd::ComputeEigenvectors::No,
-				linalg::evd::ComputeEigenvectors::No,
+			linalg::evd::evd_real(
+				A,
+				s_re.as_mut(),
+				s_im.as_mut(),
+				None,
+				None,
 				par,
+				MemStack::new(&mut MemBuffer::new(linalg::evd::evd_scratch::<Real<C>>(
+					n,
+					linalg::evd::ComputeEigenvectors::No,
+					linalg::evd::ComputeEigenvectors::No,
+					par,
+					default(),
+				))),
 				default(),
-			))),
-			default(),
-		)?;
+			)?;
 
-		Ok(s_re
-			.column_vector()
-			.iter()
-			.zip(s_im.column_vector().iter())
-			.map(|(re, im)| Complex::new(re.clone(), im.clone()))
-			.collect())
-	}
-}
+			Ok(s_re
+				.column_vector()
+				.iter()
+				.zip(s_im.column_vector().iter())
+				.map(|(re, im)| Complex::new(re.clone(), im.clone()))
+				.collect())
+		} else {
+			let A = unsafe { crate::hacks::coerce::<_, MatRef<'_, Complex<Real<C>>>>(self.canonical()) };
+			assert!(A.nrows() == A.ncols());
+			let n = A.nrows();
 
-impl<T: RealField> MatRef<'_, Complex<T>> {
-	#[track_caller]
-	/// returns the eigendecomposition of `self`
-	pub fn eigen(&self) -> Result<Eigen<T>, EvdError> {
-		Eigen::new(self.as_mat_ref())
-	}
+			let mut s = Diag::<Complex<Real<C>>>::zeros(n);
 
-	#[track_caller]
-	/// returns the eigenvalues of `self`
-	pub fn eigenvalues(&self) -> Result<Vec<Complex<T>>, EvdError> {
-		let par = get_global_parallelism();
-
-		let A = self.as_mat_ref();
-		assert!(A.nrows() == A.ncols());
-		let n = A.nrows();
-
-		let mut s = Diag::<Complex<T>>::zeros(n);
-
-		linalg::evd::evd_cplx(
-			A,
-			s.as_mut(),
-			None,
-			None,
-			par,
-			MemStack::new(&mut MemBuffer::new(linalg::evd::evd_scratch::<Complex<T>>(
-				n,
-				linalg::evd::ComputeEigenvectors::No,
-				linalg::evd::ComputeEigenvectors::No,
+			linalg::evd::evd_cplx(
+				A,
+				s.as_mut(),
+				None,
+				None,
 				par,
+				MemStack::new(&mut MemBuffer::new(linalg::evd::evd_scratch::<Complex<Real<C>>>(
+					n,
+					linalg::evd::ComputeEigenvectors::No,
+					linalg::evd::ComputeEigenvectors::No,
+					par,
+					default(),
+				))),
 				default(),
-			))),
-			default(),
-		)?;
+			)?;
 
-		Ok(s.column_vector().iter().cloned().collect())
+			if const { C::IS_CANONICAL } {
+				Ok(s.column_vector().iter().cloned().collect())
+			} else {
+				Ok(s.column_vector().iter().map(conj).collect())
+			}
+		}
 	}
 }
 
-impl<C: Conjugate> MatMut<'_, C> {
-	#[track_caller]
-	/// returns the $LU$ decomposition of `self` with partial (row) pivoting
-	pub fn partial_piv_lu(&self) -> PartialPivLu<C::Canonical> {
-		self.rb().partial_piv_lu()
-	}
-
-	#[track_caller]
-	/// returns the $LU$ decomposition of `self` with full pivoting
-	pub fn full_piv_lu(&self) -> FullPivLu<C::Canonical> {
-		self.rb().full_piv_lu()
-	}
-
-	#[track_caller]
-	/// returns the $QR$ decomposition of `self`
-	pub fn qr(&self) -> Qr<C::Canonical> {
-		self.rb().qr()
-	}
-
-	#[track_caller]
-	/// returns the $QR$ decomposition of `self` with column pivoting
-	pub fn col_piv_qr(&self) -> ColPivQr<C::Canonical> {
-		self.rb().col_piv_qr()
-	}
-
-	#[track_caller]
-	/// returns the svd of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		self.rb().svd()
-	}
-
-	#[track_caller]
-	/// returns the thin svd of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn thin_svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		self.rb().thin_svd()
-	}
-
-	#[track_caller]
-	/// returns the $L L^\top$ decomposition of `self`
-	pub fn llt(&self, side: Side) -> Result<Llt<C::Canonical>, LltError> {
-		self.rb().llt(side)
-	}
-
-	#[track_caller]
-	/// returns the $L D L^\top$ decomposition of `self`
-	pub fn ldlt(&self, side: Side) -> Result<Ldlt<C::Canonical>, LdltError> {
-		self.rb().ldlt(side)
-	}
-
-	#[track_caller]
-	/// returns the bunch-kaufman decomposition of `self`
-	pub fn lblt(&self, side: Side) -> Lblt<C::Canonical> {
-		self.rb().lblt(side)
-	}
-
-	#[track_caller]
-	/// returns the eigendecomposition of `self`, assuming it is self-adjoint
-	///
-	/// eigenvalues sorted in nondecreasing order
-	pub fn self_adjoint_eigen(&self, side: Side) -> Result<SelfAdjointEigen<C::Canonical>, EvdError> {
-		self.rb().self_adjoint_eigen(side)
-	}
-
-	#[track_caller]
-	/// returns the eigenvalues of `self`, assuming it is self-adjoint
-	///
-	/// eigenvalues sorted in nondecreasing order
-	pub fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<Real<C>>, EvdError> {
-		self.rb().self_adjoint_eigenvalues(side)
-	}
-
-	#[track_caller]
-	/// returns the singular values of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn singular_values(&self) -> Result<Vec<Real<C>>, SvdError> {
-		self.rb().singular_values()
-	}
-}
-
-impl<T: RealField> MatMut<'_, T> {
-	#[track_caller]
+impl<T: Conjugate, Inner: for<'short> Reborrow<'short, Target = mat::Ref<'short, T>>> mat::generic::Mat<Inner> {
 	/// returns the eigendecomposition of `self`
-	pub fn eigen_from_real(&self) -> Result<Eigen<T>, EvdError> {
-		self.rb().eigen_from_real()
+	#[track_caller]
+	pub fn eigen(&self) -> Result<Eigen<Real<T>>, EvdError> {
+		self.rb().eigen_imp()
 	}
 
-	#[track_caller]
 	/// returns the eigenvalues of `self`
-	pub fn eigenvalues_from_real(&self) -> Result<Vec<Complex<T>>, EvdError> {
-		self.rb().eigenvalues_from_real()
-	}
-}
-
-impl<T: RealField> MatMut<'_, Complex<T>> {
 	#[track_caller]
-	/// returns the eigendecomposition of `self`
-	pub fn eigen(&self) -> Result<Eigen<T>, EvdError> {
-		self.rb().eigen()
-	}
-
-	#[track_caller]
-	/// returns the eigenvalues of `self`
-	pub fn eigenvalues(&self) -> Result<Vec<Complex<T>>, EvdError> {
-		self.rb().eigenvalues()
-	}
-}
-
-impl<C: Conjugate> Mat<C> {
-	#[track_caller]
-	/// returns the $LU$ decomposition of `self` with partial (row) pivoting
-	pub fn partial_piv_lu(&self) -> PartialPivLu<C::Canonical> {
-		self.rb().partial_piv_lu()
-	}
-
-	#[track_caller]
-	/// returns the $LU$ decomposition of `self` with full pivoting
-	pub fn full_piv_lu(&self) -> FullPivLu<C::Canonical> {
-		self.rb().full_piv_lu()
-	}
-
-	#[track_caller]
-	/// returns the $QR$ decomposition of `self`
-	pub fn qr(&self) -> Qr<C::Canonical> {
-		self.rb().qr()
-	}
-
-	#[track_caller]
-	/// returns the $QR$ decomposition of `self` with column pivoting
-	pub fn col_piv_qr(&self) -> ColPivQr<C::Canonical> {
-		self.rb().col_piv_qr()
-	}
-
-	#[track_caller]
-	/// returns the svd of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		self.rb().svd()
-	}
-
-	#[track_caller]
-	/// returns the thin svd of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn thin_svd(&self) -> Result<Svd<C::Canonical>, SvdError> {
-		self.rb().thin_svd()
-	}
-
-	#[track_caller]
-	/// returns the $L L^\top$ decomposition of `self`
-	pub fn llt(&self, side: Side) -> Result<Llt<C::Canonical>, LltError> {
-		self.rb().llt(side)
-	}
-
-	#[track_caller]
-	/// returns the $L D L^\top$ decomposition of `self`
-	pub fn ldlt(&self, side: Side) -> Result<Ldlt<C::Canonical>, LdltError> {
-		self.rb().ldlt(side)
-	}
-
-	#[track_caller]
-	/// returns the bunch-kaufman decomposition of `self`
-	pub fn lblt(&self, side: Side) -> Lblt<C::Canonical> {
-		self.rb().lblt(side)
-	}
-
-	#[track_caller]
-	/// returns the eigendecomposition of `self`, assuming it is self-adjoint
-	///
-	/// eigenvalues sorted in nondecreasing order
-	pub fn self_adjoint_eigen(&self, side: Side) -> Result<SelfAdjointEigen<C::Canonical>, EvdError> {
-		self.rb().self_adjoint_eigen(side)
-	}
-
-	#[track_caller]
-	/// returns the eigenvalues of `self`, assuming it is self-adjoint
-	///
-	/// eigenvalues sorted in nondecreasing order
-	pub fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<Real<C>>, EvdError> {
-		self.rb().self_adjoint_eigenvalues(side)
-	}
-
-	#[track_caller]
-	/// returns the singular values of `self`
-	///
-	/// singular values are nonnegative and sorted in nonincreasing order
-	pub fn singular_values(&self) -> Result<Vec<Real<C>>, SvdError> {
-		self.rb().singular_values()
-	}
-}
-
-impl<T: RealField> Mat<T> {
-	#[track_caller]
-	/// returns the eigendecomposition of `self`
-	pub fn eigen_from_real(&self) -> Result<Eigen<T>, EvdError> {
-		self.rb().eigen_from_real()
-	}
-
-	#[track_caller]
-	/// returns the eigenvalues of `self`
-	pub fn eigenvalues_from_real(&self) -> Result<Vec<Complex<T>>, EvdError> {
-		self.rb().eigenvalues_from_real()
-	}
-}
-
-impl<T: RealField> Mat<Complex<T>> {
-	#[track_caller]
-	/// returns the eigendecomposition of `self`
-	pub fn eigen(&self) -> Result<Eigen<T>, EvdError> {
-		self.rb().eigen()
-	}
-
-	#[track_caller]
-	/// returns the eigenvalues of `self`
-	pub fn eigenvalues(&self) -> Result<Vec<Complex<T>>, EvdError> {
-		self.rb().eigenvalues()
+	pub fn eigenvalues(&self) -> Result<Vec<Complex<Real<T>>>, EvdError> {
+		self.rb().eigenvalues_imp()
 	}
 }
 
 /// [`SolveLstsqCore`] extension trait
-pub trait SolveLstsq<T: ComplexField>: SolveLstsqCore<T> {}
+pub trait SolveLstsq<T: ComplexField>: SolveLstsqCore<T> {
+	#[track_caller]
+	#[inline]
+	/// solves $A x = b$ in the sense of least squares.
+	fn solve_lstsq_in_place(&self, rhs: impl AsMatMut<T = T, Rows = usize>) {
+		self.solve_lstsq_in_place_with_conj(Conj::No, { rhs }.as_mat_mut().as_dyn_cols_mut());
+	}
+
+	#[track_caller]
+	#[inline]
+	/// solves $\bar A x = b$ in the sense of least squares.
+	fn solve_conjugate_lstsq_in_place(&self, rhs: impl AsMatMut<T = T, Rows = usize>) {
+		self.solve_lstsq_in_place_with_conj(Conj::Yes, { rhs }.as_mat_mut().as_dyn_cols_mut());
+	}
+
+	#[track_caller]
+	#[inline]
+	/// solves $A x = b$ in the sense of least squares.
+	fn solve_lstsq<Rhs: AsMatRef<T = T, Rows = usize>>(&self, rhs: Rhs) -> Rhs::Owned {
+		let rhs = rhs.as_mat_ref();
+		let mut out = Rhs::Owned::zeros(rhs.nrows(), rhs.ncols());
+		out.as_mat_mut().copy_from(rhs);
+		self.solve_lstsq_in_place(&mut out);
+		out.truncate(self.ncols(), rhs.ncols());
+		out
+	}
+	#[track_caller]
+	#[inline]
+	/// solves $\bar A x = b$ in the sense of least squares.
+	fn solve_conjugate_lstsq<Rhs: AsMatRef<T = T, Rows = usize>>(&self, rhs: Rhs) -> Rhs::Owned {
+		let rhs = rhs.as_mat_ref();
+		let mut out = Rhs::Owned::zeros(rhs.nrows(), rhs.ncols());
+		out.as_mat_mut().copy_from(rhs);
+		self.solve_conjugate_lstsq_in_place(&mut out);
+		out.truncate(self.ncols(), rhs.ncols());
+		out
+	}
+}
 /// [`DenseSolveCore`] extension trait
 pub trait DenseSolve<T: ComplexField>: DenseSolveCore<T> {}
 
@@ -693,7 +516,7 @@ pub struct Ldlt<T> {
 	D: Diag<T>,
 }
 
-/// bunch-kaufman decomposition
+/// $LBL^\top$ decomposition
 #[derive(Clone, Debug)]
 pub struct Lblt<T> {
 	L: Mat<T>,
@@ -842,7 +665,7 @@ impl<T: ComplexField> Ldlt<T> {
 }
 
 impl<T: ComplexField> Lblt<T> {
-	/// returns the bunch-kaufman decomposition of $A$
+	/// returns the $LBL^\top$ decomposition of $A$
 	#[track_caller]
 	pub fn new<C: Conjugate<Canonical = T>>(A: MatRef<'_, C>, side: Side) -> Self {
 		assert!(all(A.nrows() == A.ncols()));
@@ -867,23 +690,10 @@ impl<T: ComplexField> Lblt<T> {
 		let mut perm_fwd = vec![0usize; n];
 		let mut perm_bwd = vec![0usize; n];
 
-		let mut mem = MemBuffer::new(linalg::cholesky::bunch_kaufman::factor::cholesky_in_place_scratch::<usize, T>(
-			n,
-			par,
-			default(),
-		));
+		let mut mem = MemBuffer::new(linalg::cholesky::lblt::factor::cholesky_in_place_scratch::<usize, T>(n, par, default()));
 		let stack = MemStack::new(&mut mem);
 
-		linalg::cholesky::bunch_kaufman::factor::cholesky_in_place(
-			L.as_mut(),
-			subdiag.as_mut(),
-			Default::default(),
-			&mut perm_fwd,
-			&mut perm_bwd,
-			par,
-			stack,
-			default(),
-		);
+		linalg::cholesky::lblt::factor::cholesky_in_place(L.as_mut(), subdiag.as_mut(), &mut perm_fwd, &mut perm_bwd, par, stack, default());
 
 		diag.copy_from(L.diagonal());
 		L.diagonal_mut().fill(one());
@@ -1340,6 +1150,18 @@ impl<T: ComplexField> Svd<T> {
 	pub fn S(&self) -> DiagRef<'_, T> {
 		self.S.as_ref()
 	}
+
+	/// returns the pseudoinverse of the original matrix $A$.
+	pub fn pseudoinverse(&self) -> Mat<T> {
+		let U = self.U();
+		let V = self.V();
+		let S = self.S();
+		let par = get_global_parallelism();
+		let stack = &mut MemBuffer::new(linalg::svd::pseudoinverse_from_svd_scratch::<T>(self.nrows(), self.ncols(), par));
+		let mut pinv = Mat::zeros(self.nrows(), self.ncols());
+		linalg::svd::pseudoinverse_from_svd(pinv.rb_mut(), S, U, V, par, MemStack::new(stack));
+		pinv
+	}
 }
 
 impl<T: ComplexField> SelfAdjointEigen<T> {
@@ -1768,37 +1590,28 @@ impl<T: ComplexField> SolveCore<T> for Lblt<T> {
 	fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, T>) {
 		let par = get_global_parallelism();
 
-		let mut mem = MemBuffer::new(linalg::cholesky::bunch_kaufman::solve::solve_in_place_scratch::<usize, T>(
+		let mut mem = MemBuffer::new(linalg::cholesky::lblt::solve::solve_in_place_scratch::<usize, T>(
 			self.L.nrows(),
 			rhs.ncols(),
 			par,
 		));
 		let stack = MemStack::new(&mut mem);
 
-		linalg::cholesky::bunch_kaufman::solve::solve_in_place_with_conj(
-			self.L.as_ref(),
-			self.B_diag(),
-			self.B_subdiag(),
-			conj,
-			self.P(),
-			rhs,
-			par,
-			stack,
-		);
+		linalg::cholesky::lblt::solve::solve_in_place_with_conj(self.L.as_ref(), self.B_diag(), self.B_subdiag(), conj, self.P(), rhs, par, stack);
 	}
 
 	#[track_caller]
 	fn solve_transpose_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, T>) {
 		let par = get_global_parallelism();
 
-		let mut mem = MemBuffer::new(linalg::cholesky::bunch_kaufman::solve::solve_in_place_scratch::<usize, T>(
+		let mut mem = MemBuffer::new(linalg::cholesky::lblt::solve::solve_in_place_scratch::<usize, T>(
 			self.L.nrows(),
 			rhs.ncols(),
 			par,
 		));
 		let stack = MemStack::new(&mut mem);
 
-		linalg::cholesky::bunch_kaufman::solve::solve_in_place_with_conj(
+		linalg::cholesky::lblt::solve::solve_in_place_with_conj(
 			self.L(),
 			self.B_diag(),
 			self.B_subdiag(),
@@ -1819,10 +1632,10 @@ impl<T: ComplexField> DenseSolveCore<T> for Lblt<T> {
 		let n = self.L.nrows();
 		let mut out = Mat::zeros(n, n);
 
-		let mut mem = MemBuffer::new(linalg::cholesky::bunch_kaufman::reconstruct::reconstruct_scratch::<usize, T>(n, par));
+		let mut mem = MemBuffer::new(linalg::cholesky::lblt::reconstruct::reconstruct_scratch::<usize, T>(n, par));
 		let stack = MemStack::new(&mut mem);
 
-		linalg::cholesky::bunch_kaufman::reconstruct::reconstruct(out.as_mut(), self.L(), self.B_diag(), self.B_subdiag(), self.P(), par, stack);
+		linalg::cholesky::lblt::reconstruct::reconstruct(out.as_mut(), self.L(), self.B_diag(), self.B_subdiag(), self.P(), par, stack);
 
 		make_self_adjoint(out.as_mut());
 		out
@@ -1835,10 +1648,10 @@ impl<T: ComplexField> DenseSolveCore<T> for Lblt<T> {
 		let n = self.L.nrows();
 		let mut out = Mat::zeros(n, n);
 
-		let mut mem = MemBuffer::new(linalg::cholesky::bunch_kaufman::inverse::inverse_scratch::<usize, T>(n, par));
+		let mut mem = MemBuffer::new(linalg::cholesky::lblt::inverse::inverse_scratch::<usize, T>(n, par));
 		let stack = MemStack::new(&mut mem);
 
-		linalg::cholesky::bunch_kaufman::inverse::inverse(out.as_mut(), self.L(), self.B_diag(), self.B_subdiag(), self.P(), par, stack);
+		linalg::cholesky::lblt::inverse::inverse(out.as_mut(), self.L(), self.B_diag(), self.B_subdiag(), self.P(), par, stack);
 
 		make_self_adjoint(out.as_mut());
 		out
@@ -2700,8 +2513,8 @@ mod tests {
 		let n = A.nrows();
 		let approx_eq = CwiseMat(ApproxEq::eps() * 128.0 * (n as f64));
 
-		let evd = A.eigen_from_real().unwrap();
-		let e = A.eigenvalues_from_real().unwrap();
+		let evd = A.eigen().unwrap();
+		let e = A.eigenvalues().unwrap();
 
 		let A = Mat::from_fn(A.nrows(), A.ncols(), |i, j| c64::from(A[(i, j)]));
 

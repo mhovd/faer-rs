@@ -41,8 +41,14 @@ pub mod ops;
 use crate::internal_prelude_sp::Index;
 use reborrow::*;
 
-pub use csc::*;
-pub use csr::*;
+pub use csc::{SparseColMat, SparseColMatMut, SparseColMatRef, SymbolicSparseColMat, SymbolicSparseColMatRef};
+pub use csr::{SparseRowMat, SparseRowMatMut, SparseRowMatRef, SymbolicSparseRowMat, SymbolicSparseRowMatRef};
+
+pub use csc::symbolic as csc_symbolic;
+pub use csr::symbolic as csr_symbolic;
+
+pub use csc::numeric as csc_numeric;
+pub use csr::numeric as csr_numeric;
 
 extern crate alloc;
 

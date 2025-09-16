@@ -60,7 +60,7 @@
 //!
 //! [an implementation for sparse matrices is also available](sparse::linalg::solvers::Llt)
 //!
-//! ## bunch-kaufman decomposition
+//! ## $LBL^\top$ decomposition
 //! [`Mat::lblt`] decomposes a self-adjoint (possibly indefinite) matrix $A$ such that
 //! $$P A P^\top = LBL^H,$$
 //! where $P$ is a permutation matrix, $L$ is a lower triangular matrix, and $B$ is a block
@@ -138,14 +138,12 @@
 //! Depending on the domain of the input matrix and whether it is self-adjoint, multiple methods
 //! are provided to compute the eigendecomposition:
 //! * [`Mat::self_adjoint_eigen`] can be used with either real or complex matrices,
-//! producing an eigendecomposition of the same type
-//! * [`Mat::eigen`] can be used with complex matrices
-//! * [`Mat::eigen_from_real`] can only be used with real matrices, and produces a complex
-//!   eigendecomposition
+//! producing an eigendecomposition of the same type,
+//! * [`Mat::eigen`] can be used with real or complex matrices, but always produces complex values.
 //!
 //! if only the eigenvalues (elements of $S$) are desired, they can be obtained using
-//! [`Mat::self_adjoint_eigenvalues`] (nondecreasing order), [`Mat::eigenvalues`], or
-//! [`Mat::eigenvalues_from_real`], with the same conditions described above
+//! [`Mat::self_adjoint_eigenvalues`] (nondecreasing order), [`Mat::eigenvalues`]
+//! with the same conditions described above.
 //!
 //! # crate features
 //!
@@ -159,7 +157,7 @@
 //! data layout
 //! - `nightly`: requires the nightly compiler. enables experimental simd features such as avx512
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(non_snake_case)]
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -167,6 +165,19 @@
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
+
+/// see: [`generativity::make_guard`]
+#[macro_export]
+macro_rules! make_guard {
+    ($($name:ident),* $(,)?) => {$(
+        #[allow(unused_unsafe)]
+        let $name = unsafe { extern crate generativity; ::generativity::Id::new() };
+        #[allow(unused, unused_unsafe)]
+        let lifetime_brand = unsafe { extern crate generativity; ::generativity::LifetimeBrand::new(&$name) };
+        #[allow(unused_unsafe)]
+        let $name = unsafe { extern crate generativity; ::generativity::Guard::new($name) };
+    )*};
+}
 
 macro_rules! repeat_n {
 	($e: expr, $n: expr) => {
@@ -231,7 +242,7 @@ macro_rules! __dbg {
     ($val:expr $(,)?) => {
         match $val {
             tmp => {
-                std::eprintln!("[{}:{}:{}] {} = {:12.9?}",
+                std::eprintln!("[{}:{}:{}] {} = {:16.12?}",
                     std::file!(), std::line!(), std::column!(), std::stringify!($val), &tmp);
                 tmp
             }
@@ -269,10 +280,16 @@ macro_rules! __perf_warn {
 #[macro_export]
 macro_rules! with_dim {
 	($name: ident, $value: expr $(,)?) => {
-		let __val = $value;
-		::generativity::make_guard!($name);
-		let $name = $crate::utils::bound::Dim::new(__val, $name);
+		let __val__ = $value;
+		$crate::make_guard!($name);
+		let $name = $crate::utils::bound::Dim::new(__val__, $name);
 	};
+
+	({$(let $name: ident = $value: expr;)*}) => {$(
+		let __val__ = $value;
+		$crate::make_guard!($name);
+		let $name = $crate::utils::bound::Dim::new(__val__, $name);
+	)*};
 }
 
 /// zips together matrix of the same size, so that coefficient-wise operations can be performed on
@@ -575,7 +592,6 @@ pub mod row;
 
 pub mod linalg;
 #[path = "./operator/mod.rs"]
-#[cfg(feature = "unstable")]
 pub mod matrix_free;
 pub mod sparse;
 
@@ -587,7 +603,7 @@ pub mod io;
 mod serde;
 
 /// native unsigned integer type
-pub trait Index: faer_traits::Index + seal::Seal {}
+pub trait Index: traits::IndexCore + traits::Index + seal::Seal {}
 impl<T: faer_traits::Index<Signed: seal::Seal> + seal::Seal> Index for T {}
 
 mod seal {
@@ -936,10 +952,16 @@ impl Par {
 
 #[allow(non_camel_case_types)]
 /// `Complex<f32>`
-pub type c32 = num_complex::Complex32;
+pub type c32 = traits::c32;
 #[allow(non_camel_case_types)]
 /// `Complex<f64>`
-pub type c64 = num_complex::Complex64;
+pub type c64 = traits::c64;
+#[allow(non_camel_case_types)]
+/// `Complex<f64>`
+pub type cx128 = traits::cx128;
+#[allow(non_camel_case_types)]
+/// `Complex<f64>`
+pub type fx128 = traits::fx128;
 
 pub use col::{Col, ColMut, ColRef};
 pub use mat::{Mat, MatMut, MatRef};
@@ -1003,7 +1025,7 @@ mod internal_prelude {
 
 	pub use faer_macros::math;
 	pub use faer_traits::math_utils::*;
-	pub use faer_traits::{ComplexField, Conjugate, Index, Real, RealField, SignedIndex, SimdArch};
+	pub use faer_traits::{ComplexField, Conjugate, Index, IndexCore, Real, RealField, SignedIndex, SimdArch};
 
 	#[inline]
 	pub fn simd_align(i: usize) -> usize {
@@ -1014,9 +1036,9 @@ mod internal_prelude {
 
 	pub use {unzip as uz, zip as z};
 
+	pub use crate::make_guard;
 	pub use dyn_stack::{MemStack, StackReq};
 	pub use equator::{assert, assert as Assert, debug_assert, debug_assert as DebugAssert};
-	pub use generativity::make_guard;
 	pub use reborrow::*;
 }
 
@@ -1025,7 +1047,8 @@ pub(crate) mod internal_prelude_sp {
 	pub(crate) use crate::internal_prelude::*;
 	pub(crate) use crate::sparse::{
 		FaerError, NONE, Pair, SparseColMat, SparseColMatMut, SparseColMatRef, SparseRowMat, SparseRowMatMut, SparseRowMatRef, SymbolicSparseColMat,
-		SymbolicSparseColMatRef, SymbolicSparseRowMat, SymbolicSparseRowMatRef, Triplet, linalg as linalg_sp, try_collect, try_zeroed, windows2,
+		SymbolicSparseColMatRef, SymbolicSparseRowMat, SymbolicSparseRowMatRef, Triplet, csc_numeric, csc_symbolic, csr_numeric, csr_symbolic,
+		linalg as linalg_sp, try_collect, try_zeroed, windows2,
 	};
 	pub(crate) use core::cell::Cell;
 	pub(crate) use core::iter;
@@ -1034,12 +1057,18 @@ pub(crate) mod internal_prelude_sp {
 
 /// useful imports for general usage of the library
 pub mod prelude {
-	use super::*;
+	pub use reborrow::{IntoConst, Reborrow, ReborrowMut};
 
-	pub use super::{Par, Scale, c32, c64, mat};
+	pub use super::{Par, Scale, c32, c64, col, mat, row, unzip, zip};
 	pub use col::{Col, ColMut, ColRef};
 	pub use mat::{Mat, MatMut, MatRef};
 	pub use row::{Row, RowMut, RowRef};
+
+	#[cfg(feature = "linalg")]
+	pub use super::linalg::solvers::{DenseSolve, Solve, SolveLstsq};
+
+	#[cfg(feature = "sparse")]
+	pub use super::prelude_sp::*;
 
 	/// see [`Default`]
 	#[inline]
@@ -1048,9 +1077,30 @@ pub mod prelude {
 	}
 }
 
+#[cfg(feature = "sparse")]
+mod prelude_sp {
+	use crate::sparse;
+
+	pub use sparse::{SparseColMat, SparseColMatMut, SparseColMatRef, SparseRowMat, SparseRowMatMut, SparseRowMatRef};
+}
+
 /// scaling factor for multiplying matrices.
 #[derive(Copy, Clone, Debug)]
+#[repr(transparent)]
 pub struct Scale<T>(pub T);
+impl<T> Scale<T> {
+	/// create a reference to a scaling factor from a reference to a value.
+	#[inline(always)]
+	pub fn from_ref(value: &T) -> &Self {
+		unsafe { &*(value as *const T as *const Self) }
+	}
+
+	/// create a mutable reference to a scaling factor from a mutable reference to a value.
+	#[inline(always)]
+	pub fn from_mut(value: &mut T) -> &mut Self {
+		unsafe { &mut *(value as *mut T as *mut Self) }
+	}
+}
 
 /// 0: disabled
 /// 1: `Seq`
@@ -1234,4 +1284,6 @@ mod into_range {
 
 mod sort;
 
-pub use {dyn_stack, reborrow};
+pub extern crate dyn_stack;
+pub extern crate faer_traits as traits;
+pub extern crate reborrow;

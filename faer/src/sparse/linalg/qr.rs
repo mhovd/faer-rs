@@ -252,7 +252,7 @@ pub(crate) fn ghost_column_counts_aat<'m, 'n, I: Index>(
 /// computes the size and alignment of the workspace required to compute the column counts
 /// of the cholesky factor of the matrix $A A^\top$, where $A$ has dimensions `(nrows, ncols)`
 #[inline]
-pub fn column_counts_aat_scrach<I: Index>(nrows: usize, ncols: usize) -> StackReq {
+pub fn column_counts_aat_scratch<I: Index>(nrows: usize, ncols: usize) -> StackReq {
 	StackReq::all_of(&[StackReq::new::<I>(nrows).array(5), StackReq::new::<I>(ncols)])
 }
 
@@ -696,26 +696,23 @@ pub mod supernodal {
 			self.tau_val
 		}
 
-		/// solves the equation $A x = \text{rhs}$ in the sense of least squares, implicitly
-		/// conjugating $A$ if needed
+		/// Applies $Q^{\top}$ to the rhs in place, implicitly conjugating $Q$ if needed
 		///
 		/// `work` is a temporary workspace with the same dimensions as `rhs`
-		#[track_caller]
 		#[math]
-		pub fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>, stack: &mut MemStack)
+		pub fn apply_Q_transpose_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>, stack: &mut MemStack)
 		where
 			T: ComplexField,
 		{
 			let L_symbolic = self.symbolic().R_adjoint();
 			let H_symbolic = self.symbolic().householder();
 			let n_supernodes = L_symbolic.n_supernodes();
+			let mut stack = stack;
 
 			assert!(rhs.nrows() == self.symbolic().householder().nrows);
 
 			let mut x = rhs;
 			let k = x.ncols();
-
-			let mut stack = stack;
 			let mut tmp = work;
 			tmp.fill(zero());
 
@@ -742,7 +739,7 @@ pub mod supernodal {
 					for j in 0..k {
 						for idx in 0..s_h_row_full_end - s_h_row_begin {
 							let i = s_row_idx_in_panel[idx].zx();
-							tmp.write(idx, j, x.read(i, j));
+							tmp[(idx, j)] = copy(x[(i, j)]);
 						}
 					}
 
@@ -770,7 +767,7 @@ pub mod supernodal {
 						linalg::householder::apply_block_householder_sequence_transpose_on_the_left_in_place_with_conj(
 							b_H.rb(),
 							b_tau.rb(),
-							Conj::Yes.compose(conj),
+							conj,
 							tmp.rb_mut().subrows_mut(start, nrows),
 							par,
 							stack.rb_mut(),
@@ -787,7 +784,7 @@ pub mod supernodal {
 					for j in 0..k {
 						for idx in 0..s_h_row_full_end - s_h_row_begin {
 							let i = s_row_idx_in_panel[idx].zx();
-							x.write(i, j, tmp.read(idx, j));
+							x[(i, j)] = copy(tmp[(idx, j)]);
 						}
 					}
 				}
@@ -796,6 +793,28 @@ pub mod supernodal {
 			let n = L_symbolic.nrows();
 			x.rb_mut().subrows_mut(0, n).copy_from(tmp.rb().subrows(0, n));
 			x.rb_mut().subrows_mut(n, m - n).fill(zero());
+		}
+
+		/// solves the equation $A x = \text{rhs}$ in the sense of least squares, implicitly
+		/// conjugating $A$ if needed
+		///
+		/// `work` is a temporary workspace with the same dimensions as `rhs`
+		#[track_caller]
+		#[math]
+		pub fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>, stack: &mut MemStack)
+		where
+			T: ComplexField,
+		{
+			let mut work = work;
+			let mut rhs = rhs;
+			self.apply_Q_transpose_in_place_with_conj(conj.compose(Conj::Yes), rhs.rb_mut(), par, work.rb_mut(), stack);
+
+			let L_symbolic = self.symbolic().R_adjoint();
+			let n_supernodes = L_symbolic.n_supernodes();
+
+			let mut tmp = work;
+			let mut x = rhs;
+			let k = x.ncols();
 
 			// x <- R^-1 x = L^-T x
 			{
@@ -811,7 +830,7 @@ pub mod supernodal {
 					for j in 0..k {
 						for (idx, i) in s.pattern().iter().enumerate() {
 							let i = i.zx();
-							tmp.write(idx, j, x.read(i, j));
+							tmp[(idx, j)] = copy(x[(i, j)]);
 						}
 					}
 
@@ -1106,7 +1125,7 @@ pub mod supernodal {
 						let pj = col_perm.map(|perm| perm.arrays().1[j].zx()).unwrap_or(j);
 						let ix = idx;
 						let iy = col_global_to_local[pj].zx();
-						s_H.write(ix, iy, s_H[(ix, iy)] + *value);
+						s_H[(ix, iy)] = s_H[(ix, iy)] + *value;
 					}
 				}
 			}
@@ -1153,7 +1172,7 @@ pub mod supernodal {
 					for (j_idx_in_c, j) in c_pattern.iter().enumerate() {
 						let j_idx_in_c = j_idx_in_c + c_ncols;
 						if j.zx() >= c_min_col {
-							s_H.write(s_idx, col_global_to_local[j.zx()].zx(), c_H.read(c_idx, j_idx_in_c));
+							s_H[(s_idx, col_global_to_local[j.zx()].zx())] = copy(c_H[(c_idx, j_idx_in_c)]);
 						}
 					}
 				}
@@ -1450,13 +1469,12 @@ pub mod simplicial {
 			self.tau_val
 		}
 
-		/// solves the equation $A x = \text{rhs}$ in the sense of least squares, implicitly
-		/// conjugating $A$ if needed
+		/// Applies $Q^{\top}$ to the input matrix `rhs`, implicitly conjugating the $Q$
+		/// matrix if needed
 		///
 		/// `work` is a temporary workspace with the same dimensions as `rhs`.
-		#[track_caller]
 		#[math]
-		pub fn solve_in_place_with_conj(&self, conj_qr: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>)
+		pub fn apply_qt_in_place_with_conj(&self, conj_qr: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>)
 		where
 			T: ComplexField,
 		{
@@ -1467,10 +1485,6 @@ pub mod simplicial {
 			let m = self.symbolic.nrows;
 			let n = self.symbolic.ncols;
 
-			let r = SparseColMatRef::<'_, I, T>::new(
-				unsafe { SymbolicSparseColMatRef::new_unchecked(n, n, self.r_col_ptr, None, self.r_row_idx) },
-				self.r_val,
-			);
 			let h = SparseColMatRef::<'_, I, T>::new(
 				unsafe { SymbolicSparseColMatRef::new_unchecked(m, n, self.householder_col_ptr, None, self.householder_row_idx) },
 				self.householder_val,
@@ -1513,6 +1527,31 @@ pub mod simplicial {
 			}
 			x.rb_mut().subrows_mut(0, n).copy_from(tmp.rb().subrows(0, n));
 			x.rb_mut().subrows_mut(n, m - n).fill(zero());
+		}
+
+		/// solves the equation $A x = \text{rhs}$ in the sense of least squares, implicitly
+		/// conjugating $A$ if needed
+		///
+		/// `work` is a temporary workspace with the same dimensions as `rhs`.
+		#[track_caller]
+		#[math]
+		pub fn solve_in_place_with_conj(&self, conj_qr: Conj, rhs: MatMut<'_, T>, par: Par, work: MatMut<'_, T>)
+		where
+			T: ComplexField,
+		{
+			let mut work = work;
+			let mut rhs = rhs;
+			self.apply_qt_in_place_with_conj(conj_qr, rhs.rb_mut(), par, work.rb_mut());
+
+			let _ = par;
+			assert!(rhs.nrows() == self.symbolic.nrows);
+			let mut x = rhs;
+
+			let n = self.symbolic.ncols;
+			let r = SparseColMatRef::<'_, I, T>::new(
+				unsafe { SymbolicSparseColMatRef::new_unchecked(n, n, self.r_col_ptr, None, self.r_row_idx) },
+				self.r_val,
+			);
 
 			linalg_sp::triangular_solve::solve_upper_triangular_in_place(r, conj_qr, x.rb_mut().subrows_mut(0, n), par);
 		}
@@ -1719,8 +1758,8 @@ pub mod simplicial {
 
 			let (mut head, tail) = h_col.rb_mut().split_at_row_mut(1);
 			let head = &mut head[0];
-			let (tau, _) = crate::linalg::householder::make_householder_in_place(head, tail);
-			tau_val[j] = tau;
+			let crate::linalg::householder::HouseholderInfo { tau, .. } = crate::linalg::householder::make_householder_in_place(head, tail);
+			tau_val[j] = from_real(tau);
 			r_val[r_pos] = copy(*head);
 			*head = one();
 
@@ -1883,7 +1922,7 @@ impl<'a, I: Index, T> QrRef<'a, I, T> {
 
 		for j in 0..k {
 			for (i, p) in inv.iter().enumerate() {
-				rhs.write(i, j, x.read(p.zx(), j));
+				rhs[(i, j)] = copy(&x[(p.zx(), j)]);
 			}
 		}
 	}

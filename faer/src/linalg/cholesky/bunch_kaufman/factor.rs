@@ -27,7 +27,7 @@ pub enum PivotingStrategy {
 
 /// tuning parameters for the decomposition
 #[derive(Copy, Clone, Debug)]
-pub struct BunchKaufmanParams {
+pub struct LbltParams {
 	/// pivoting strategy
 	pub pivoting: PivotingStrategy,
 	/// block size of the algorithm
@@ -38,20 +38,6 @@ pub struct BunchKaufmanParams {
 
 	#[doc(hidden)]
 	pub non_exhaustive: NonExhaustive,
-}
-
-/// dynamic bunch-kaufman regularization
-///
-/// values below `epsilon` in absolute value, or with the wrong sign are set to `delta` with
-/// their corrected sign
-#[derive(Copy, Clone, Debug)]
-pub struct BunchKaufmanRegularization<'a, T> {
-	/// expected signs for the diagonal at each step of the decomposition
-	pub dynamic_regularization_signs: Option<&'a [i8]>,
-	/// regularized value
-	pub dynamic_regularization_delta: T,
-	/// regularization threshold
-	pub dynamic_regularization_epsilon: T,
 }
 
 #[math]
@@ -298,7 +284,7 @@ fn rank_2_update_and_argmax<'N, T: ComplexField>(
 }
 
 #[math]
-fn lblt_full_piv<T: ComplexField>(A: MatMut<'_, T>, subdiag: DiagMut<'_, T>, pivots: &mut [usize], par: Par, params: BunchKaufmanParams) {
+fn lblt_full_piv<T: ComplexField>(A: MatMut<'_, T>, subdiag: DiagMut<'_, T>, pivots: &mut [usize], par: Par, params: LbltParams) {
 	let alpha = (one::<T::Real>() + sqrt(from_f64::<T::Real>(17.0))) * from_f64::<T::Real>(0.125);
 	let alpha = alpha * alpha;
 
@@ -824,6 +810,7 @@ fn lblt_unblocked<T: ComplexField>(
 	diagonal: bool,
 	par: Par,
 ) {
+	let _ = par;
 	let mut A = A;
 	let mut A_left = A_left;
 	let mut subdiag = subdiag;
@@ -919,28 +906,9 @@ fn lblt_unblocked<T: ComplexField>(
 				let diag_inv = recip(diag);
 				subdiag[0] = zero();
 
-				let (_, _, L, mut A) = A.rb_mut().split_at_mut(1, 1);
-				let n = A.nrows();
-
-				let mut L = L.col_mut(0);
-				zip!(L.rb_mut()).for_each(|unzip!(x)| *x = mul_real(*x, diag_inv));
-				let L = L.rb();
-
-				linalg::matmul::triangular::matmul(
-					A.rb_mut(),
-					BlockStructure::TriangularLower,
-					Accum::Add,
-					L,
-					BlockStructure::Rectangular,
-					L.adjoint(),
-					BlockStructure::Rectangular,
-					from_real(-diag),
-					par,
-				);
-
-				for j in 0..n {
-					A[(j, j)] = from_real(real(A[(j, j)]));
-				}
+				let (_, _, L, A) = A.rb_mut().split_at_mut(1, 1);
+				let L = L.col_mut(0);
+				rank1_update(A, L, diag_inv);
 			} else {
 				let a00 = real(A[(0, 0)]);
 				let a11 = real(A[(1, 1)]);
@@ -962,25 +930,9 @@ fn lblt_unblocked<T: ComplexField>(
 
 				//         [ a00  a01 ]
 				// L_new * [ a10  a11 ] = L
-				let (_, _, L, mut A) = A.rb_mut().split_at_mut(2, 2);
-				let (mut L0, mut L1) = L.two_cols_mut(0, 1);
-
-				let n = A.nrows();
-				for j in 0..n {
-					let x0 = copy(L0[j]);
-					let x1 = copy(L1[j]);
-
-					let w0 = mul_real(mul_real(x0, d11) - x1 * d10, d);
-					let w1 = mul_real(mul_real(x1, d00) - x0 * conj(d10), d);
-
-					for i in j..n {
-						A[(i, j)] = A[(i, j)] - L0[i] * conj(w0) - L1[i] * conj(w1);
-					}
-					A[(j, j)] = from_real(real(A[(j, j)]));
-
-					L0[j] = w0;
-					L1[j] = w1;
-				}
+				let (_, _, L, A) = A.rb_mut().split_at_mut(2, 2);
+				let (L0, L1) = L.two_cols_mut(0, 1);
+				rank2_update(A, L0, L1, d, d00, d10, d11);
 			}
 		}
 
@@ -995,17 +947,7 @@ fn lblt_unblocked<T: ComplexField>(
 	}
 }
 
-impl<T: RealField> Default for BunchKaufmanRegularization<'_, T> {
-	fn default() -> Self {
-		Self {
-			dynamic_regularization_signs: None,
-			dynamic_regularization_delta: zero(),
-			dynamic_regularization_epsilon: zero(),
-		}
-	}
-}
-
-impl<T: ComplexField> Auto<T> for BunchKaufmanParams {
+impl<T: ComplexField> Auto<T> for LbltParams {
 	fn auto() -> Self {
 		Self {
 			pivoting: PivotingStrategy::PartialDiag,
@@ -1016,9 +958,245 @@ impl<T: ComplexField> Auto<T> for BunchKaufmanParams {
 	}
 }
 
-/// computes the size and alignment of required workspace for performing a bunch-kaufman
+pub fn rank2_update<'a, T: ComplexField>(
+	mut A: MatMut<'a, T>,
+	mut L0: ColMut<'a, T>,
+	mut L1: ColMut<'a, T>,
+	d: T::Real,
+	d00: T::Real,
+	d10: T,
+	d11: T::Real,
+) {
+	if const { T::SIMD_CAPABILITIES.is_simd() } {
+		if let (Some(A), Some(L0), Some(L1)) = (
+			A.rb_mut().try_as_col_major_mut(),
+			L0.rb_mut().try_as_col_major_mut(),
+			L1.rb_mut().try_as_col_major_mut(),
+		) {
+			rank2_update_simd(A, L0, L1, d, d00, d10, d11);
+		} else {
+			rank2_update_fallback(A, L0, L1, d, d00, d10, d11);
+		}
+	} else {
+		rank2_update_fallback(A, L0, L1, d, d00, d10, d11);
+	}
+}
+
+#[math]
+pub fn rank2_update_simd<'a, T: ComplexField>(
+	A: MatMut<'a, T, usize, usize, ContiguousFwd>,
+	L0: ColMut<'a, T, usize, ContiguousFwd>,
+	L1: ColMut<'a, T, usize, ContiguousFwd>,
+	d: T::Real,
+	d00: T::Real,
+	d10: T,
+	d11: T::Real,
+) {
+	struct Impl<'a, T: ComplexField> {
+		A: MatMut<'a, T, usize, usize, ContiguousFwd>,
+		L0: ColMut<'a, T, usize, ContiguousFwd>,
+		L1: ColMut<'a, T, usize, ContiguousFwd>,
+		d: T::Real,
+		d00: T::Real,
+		d10: T,
+		d11: T::Real,
+	}
+
+	impl<T: ComplexField> pulp::WithSimd for Impl<'_, T> {
+		type Output = ();
+
+		#[inline(always)]
+		fn with_simd<S: pulp::Simd>(self, simd: S) {
+			let Self {
+				mut A,
+				mut L0,
+				mut L1,
+				d,
+				d00,
+				d10,
+				d11,
+			} = self;
+			let n = A.nrows();
+			for j in 0..n {
+				let x0 = copy(L0[j]);
+				let x1 = copy(L1[j]);
+				let w0 = mul_real(mul_real(x0, d11) - x1 * d10, d);
+				let w1 = mul_real(mul_real(x1, d00) - x0 * conj(d10), d);
+
+				with_dim!({
+					let subrange_len = n - j;
+				});
+				{
+					let mut A = A.rb_mut().get_mut(j.., j).as_row_shape_mut(subrange_len);
+					let L0 = L0.rb().get(j..).as_row_shape(subrange_len);
+					let L1 = L1.rb().get(j..).as_row_shape(subrange_len);
+					let simd = SimdCtx::<T, S>::new(T::simd_ctx(simd), subrange_len);
+					let (head, body, tail) = simd.indices();
+
+					let w0_conj = conj(w0);
+					let w1_conj = conj(w1);
+					let w0_conj_neg = -w0_conj;
+					let w1_conj_neg = -w1_conj;
+					let w0_splat = simd.splat(&w0_conj_neg);
+					let w1_splat = simd.splat(&w1_conj_neg);
+
+					if let Some(i) = head {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						let l1_val = simd.read(L1, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						acc = simd.mul_add(l1_val, w1_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+
+					for i in body.clone() {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						let l1_val = simd.read(L1, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						acc = simd.mul_add(l1_val, w1_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+
+					if let Some(i) = tail {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						let l1_val = simd.read(L1, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						acc = simd.mul_add(l1_val, w1_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+				}
+				A[(j, j)] = from_real(real(A[(j, j)]));
+
+				L0[j] = w0;
+				L1[j] = w1;
+			}
+		}
+	}
+	dispatch!(Impl { A, L0, L1, d, d00, d10, d11 }, Impl, T)
+}
+
+#[math]
+pub fn rank2_update_fallback<'a, T: ComplexField>(
+	mut A: MatMut<'a, T>,
+	mut L0: ColMut<'a, T>,
+	mut L1: ColMut<'a, T>,
+	d: T::Real,
+	d00: T::Real,
+	d10: T,
+	d11: T::Real,
+) {
+	let n = A.nrows();
+	for j in 0..n {
+		let x0 = copy(L0[j]);
+		let x1 = copy(L1[j]);
+
+		let w0 = mul_real(mul_real(x0, d11) - x1 * d10, d);
+		let w1 = mul_real(mul_real(x1, d00) - x0 * conj(d10), d);
+
+		for i in j..n {
+			A[(i, j)] = A[(i, j)] - L0[i] * conj(w0) - L1[i] * conj(w1);
+		}
+		A[(j, j)] = from_real(real(A[(j, j)]));
+
+		L0[j] = w0;
+		L1[j] = w1;
+	}
+}
+
+pub fn rank1_update<'a, T: ComplexField>(mut A: MatMut<'a, T>, mut L0: ColMut<'a, T>, d: T::Real) {
+	if const { T::SIMD_CAPABILITIES.is_simd() } {
+		if let (Some(A), Some(L0)) = (A.rb_mut().try_as_col_major_mut(), L0.rb_mut().try_as_col_major_mut()) {
+			rank1_update_simd(A, L0, d);
+		} else {
+			rank1_update_fallback(A, L0, d);
+		}
+	} else {
+		rank1_update_fallback(A, L0, d);
+	}
+}
+
+#[math]
+pub fn rank1_update_simd<'a, T: ComplexField>(A: MatMut<'a, T, usize, usize, ContiguousFwd>, L0: ColMut<'a, T, usize, ContiguousFwd>, d: T::Real) {
+	struct Impl<'a, T: ComplexField> {
+		A: MatMut<'a, T, usize, usize, ContiguousFwd>,
+		L0: ColMut<'a, T, usize, ContiguousFwd>,
+		d: T::Real,
+	}
+
+	impl<T: ComplexField> pulp::WithSimd for Impl<'_, T> {
+		type Output = ();
+
+		#[inline(always)]
+		fn with_simd<S: pulp::Simd>(self, simd: S) {
+			let Self { mut A, mut L0, d } = self;
+
+			let n = A.nrows();
+			for j in 0..n {
+				let x0 = copy(L0[j]);
+				let w0 = mul_real(x0, d);
+
+				with_dim!({
+					let subrange_len = n - j;
+				});
+				{
+					let mut A = A.rb_mut().get_mut(j.., j).as_row_shape_mut(subrange_len);
+					let L0 = L0.rb().get(j..).as_row_shape(subrange_len);
+					let simd = SimdCtx::<T, S>::new(T::simd_ctx(simd), subrange_len);
+					let (head, body, tail) = simd.indices();
+
+					let w0_conj = conj(w0);
+					let w0_conj_neg = -w0_conj;
+					let w0_splat = simd.splat(&w0_conj_neg);
+
+					if let Some(i) = head {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+
+					for i in body.clone() {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+
+					if let Some(i) = tail {
+						let mut acc = simd.read(A.rb(), i);
+						let l0_val = simd.read(L0, i);
+						acc = simd.mul_add(l0_val, w0_splat, acc);
+						simd.write(A.rb_mut(), i, acc);
+					}
+				}
+				A[(j, j)] = from_real(real(A[(j, j)]));
+
+				L0[j] = w0;
+			}
+		}
+	}
+	dispatch!(Impl { A, L0, d }, Impl, T)
+}
+
+#[math]
+pub fn rank1_update_fallback<'a, T: ComplexField>(mut A: MatMut<'a, T>, mut L0: ColMut<'a, T>, d: T::Real) {
+	let n = A.nrows();
+	for j in 0..n {
+		let x0 = copy(L0[j]);
+		let w0 = mul_real(x0, d);
+
+		for i in j..n {
+			A[(i, j)] = A[(i, j)] - L0[i] * conj(w0);
+		}
+		A[(j, j)] = from_real(real(A[(j, j)]));
+		L0[j] = w0;
+	}
+}
+/// computes the size and alignment of required workspace for performing an $LBL^\top$
 /// decomposition
-pub fn cholesky_in_place_scratch<I: Index, T: ComplexField>(dim: usize, par: Par, params: Spec<BunchKaufmanParams, T>) -> StackReq {
+pub fn cholesky_in_place_scratch<I: Index, T: ComplexField>(dim: usize, par: Par, params: Spec<LbltParams, T>) -> StackReq {
 	let params = params.config;
 	let _ = par;
 	let mut bs = params.blocksize;
@@ -1028,16 +1206,14 @@ pub fn cholesky_in_place_scratch<I: Index, T: ComplexField>(dim: usize, par: Par
 	StackReq::new::<usize>(dim).and(temp_mat_scratch::<T>(dim, bs))
 }
 
-/// info about the result of the bunch-kaufman factorization
+/// info about the result of the $LBL^\top$ factorization
 #[derive(Copy, Clone, Debug)]
-pub struct BunchKaufmanInfo {
-	/// number of pivots whose value or sign had to be corrected
-	pub dynamic_regularization_count: usize,
+pub struct LbltInfo {
 	/// number of pivoting transpositions
 	pub transposition_count: usize,
 }
 
-/// computes the bunch-kaufman factorization of $A$ and stores the factorization in `matrix` and
+/// computes the $LBL^\top$ factorization of $A$ and stores the factorization in `matrix` and
 /// `subdiag`
 ///
 /// the diagonal of the block diagonal matrix is stored on the diagonal
@@ -1055,15 +1231,13 @@ pub struct BunchKaufmanInfo {
 pub fn cholesky_in_place<'out, I: Index, T: ComplexField>(
 	A: MatMut<'_, T>,
 	subdiag: DiagMut<'_, T>,
-	regularization: BunchKaufmanRegularization<'_, T::Real>,
 	perm: &'out mut [I],
 	perm_inv: &'out mut [I],
 	par: Par,
 	stack: &mut MemStack,
-	params: Spec<BunchKaufmanParams, T>,
-) -> (BunchKaufmanInfo, PermRef<'out, I>) {
+	params: Spec<LbltParams, T>,
+) -> (LbltInfo, PermRef<'out, I>) {
 	let params = params.config;
-	let _ = regularization;
 
 	let truncate = <I::Signed as SignedIndex>::truncate;
 
@@ -1073,10 +1247,10 @@ pub fn cholesky_in_place<'out, I: Index, T: ComplexField>(
 	#[cfg(feature = "perf-warn")]
 	if A.row_stride().unsigned_abs() != 1 && crate::__perf_warn!(CHOLESKY_WARN) {
 		if A.col_stride().unsigned_abs() == 1 {
-			log::warn!(target: "faer_perf", "Bunch-Kaufman decomposition prefers column-major
+			log::warn!(target: "faer_perf", "$LBL^\top$ decomposition prefers column-major
     matrix. Found row-major matrix.");
 		} else {
-			log::warn!(target: "faer_perf", "Bunch-Kaufman decomposition prefers column-major
+			log::warn!(target: "faer_perf", "$LBL^\top$ decomposition prefers column-major
     matrix. Found matrix with generic strides.");
 		}
 	}
@@ -1122,11 +1296,5 @@ pub fn cholesky_in_place<'out, I: Index, T: ComplexField>(
 		perm_inv[p.to_signed().zx()] = I::from_signed(truncate(i));
 	}
 
-	(
-		BunchKaufmanInfo {
-			dynamic_regularization_count: 0,
-			transposition_count,
-		},
-		unsafe { PermRef::new_unchecked(perm, perm_inv, n) },
-	)
+	(LbltInfo { transposition_count }, unsafe { PermRef::new_unchecked(perm, perm_inv, n) })
 }

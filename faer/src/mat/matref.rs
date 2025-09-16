@@ -1,55 +1,45 @@
-use super::*;
-use crate::col::colref::ColRef;
+use super::{Mat, MatMut, MatRef, *};
+use crate::col::ColRef;
 use crate::internal_prelude::*;
-use crate::row::rowref::RowRef;
+use crate::row::RowRef;
 use crate::utils::bound::{Dim, Partition};
 use crate::{ContiguousFwd, Idx, IdxInc};
-use core::ops::Index;
 use equator::{assert, debug_assert};
 use faer_traits::Real;
 use generativity::Guard;
-use matmut::MatMut;
-use matown::Mat;
 
-/// immutable view over a matrix, similar to an immutable reference to a 2d strided [prim@slice]
-///
-/// # Note
-///
-/// unlike a slice, the data pointed to by `MatRef<'_, T>` is allowed to be partially or fully
-/// uninitialized under certain conditions. in this case, care must be taken to not perform any
-/// operations that read the uninitialized values, either directly or indirectly through any of the
-/// numerical library routines, unless it is explicitly permitted
-pub struct MatRef<'a, T, Rows = usize, Cols = usize, RStride = isize, CStride = isize> {
+/// see [`super::MatRef`]
+pub struct Ref<'a, T, Rows = usize, Cols = usize, RStride = isize, CStride = isize> {
 	pub(super) imp: MatView<T, Rows, Cols, RStride, CStride>,
 	pub(super) __marker: PhantomData<&'a T>,
 }
 
-impl<T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Copy for MatRef<'_, T, Rows, Cols, RStride, CStride> {}
-impl<T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Clone for MatRef<'_, T, Rows, Cols, RStride, CStride> {
+impl<T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Copy for Ref<'_, T, Rows, Cols, RStride, CStride> {}
+impl<T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Clone for Ref<'_, T, Rows, Cols, RStride, CStride> {
 	#[inline]
 	fn clone(&self) -> Self {
 		*self
 	}
 }
 
-impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Reborrow<'short> for MatRef<'_, T, Rows, Cols, RStride, CStride> {
-	type Target = MatRef<'short, T, Rows, Cols, RStride, CStride>;
+impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Reborrow<'short> for Ref<'_, T, Rows, Cols, RStride, CStride> {
+	type Target = Ref<'short, T, Rows, Cols, RStride, CStride>;
 
 	#[inline]
 	fn rb(&'short self) -> Self::Target {
 		*self
 	}
 }
-impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> ReborrowMut<'short> for MatRef<'_, T, Rows, Cols, RStride, CStride> {
-	type Target = MatRef<'short, T, Rows, Cols, RStride, CStride>;
+impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> ReborrowMut<'short> for Ref<'_, T, Rows, Cols, RStride, CStride> {
+	type Target = Ref<'short, T, Rows, Cols, RStride, CStride>;
 
 	#[inline]
 	fn rb_mut(&'short mut self) -> Self::Target {
 		*self
 	}
 }
-impl<'a, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> IntoConst for MatRef<'a, T, Rows, Cols, RStride, CStride> {
-	type Target = MatRef<'a, T, Rows, Cols, RStride, CStride>;
+impl<'a, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> IntoConst for Ref<'a, T, Rows, Cols, RStride, CStride> {
+	type Target = Ref<'a, T, Rows, Cols, RStride, CStride>;
 
 	#[inline]
 	fn into_const(self) -> Self::Target {
@@ -57,8 +47,8 @@ impl<'a, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> IntoConst for 
 	}
 }
 
-unsafe impl<T: Sync, Rows: Sync, Cols: Sync, RStride: Sync, CStride: Sync> Sync for MatRef<'_, T, Rows, Cols, RStride, CStride> {}
-unsafe impl<T: Sync, Rows: Send, Cols: Send, RStride: Send, CStride: Send> Send for MatRef<'_, T, Rows, Cols, RStride, CStride> {}
+unsafe impl<T: Sync, Rows: Sync, Cols: Sync, RStride: Sync, CStride: Sync> Sync for Ref<'_, T, Rows, Cols, RStride, CStride> {}
+unsafe impl<T: Sync, Rows: Send, Cols: Send, RStride: Send, CStride: Send> Send for Ref<'_, T, Rows, Cols, RStride, CStride> {}
 
 #[track_caller]
 #[inline]
@@ -87,10 +77,7 @@ impl<'a, T> MatRef<'a, T> {
 
 	/// creates a `1×1` view over the given element
 	#[inline]
-	pub fn from_ref(value: &'a T) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_ref(value: &'a T) -> Self {
 		unsafe { MatRef::from_raw_parts(value as *const T, 1, 1, 0, 0) }
 	}
 }
@@ -98,10 +85,7 @@ impl<'a, T> MatRef<'a, T> {
 impl<'a, T, Rows: Shape, Cols: Shape> MatRef<'a, T, Rows, Cols> {
 	/// creates a `MatRef` from a view over a single element, repeated `nrows×ncols` times
 	#[inline]
-	pub fn from_repeated_ref(value: &'a T, nrows: Rows, ncols: Cols) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_repeated_ref(value: &'a T, nrows: Rows, ncols: Cols) -> Self {
 		unsafe { MatRef::from_raw_parts(value as *const T, nrows, ncols, 0, 0) }
 	}
 
@@ -126,10 +110,7 @@ impl<'a, T, Rows: Shape, Cols: Shape> MatRef<'a, T, Rows, Cols> {
 	/// ```
 	#[inline]
 	#[track_caller]
-	pub fn from_column_major_slice(slice: &'a [T], nrows: Rows, ncols: Cols) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_column_major_slice(slice: &'a [T], nrows: Rows, ncols: Cols) -> Self {
 		from_slice_assert(nrows.unbound(), ncols.unbound(), slice.len());
 
 		unsafe { MatRef::from_raw_parts(slice.as_ptr(), nrows, ncols, 1, nrows.unbound() as isize) }
@@ -140,10 +121,7 @@ impl<'a, T, Rows: Shape, Cols: Shape> MatRef<'a, T, Rows, Cols> {
 	/// columns are separated by `col_stride` elements
 	#[inline]
 	#[track_caller]
-	pub fn from_column_major_slice_with_stride(slice: &'a [T], nrows: Rows, ncols: Cols, col_stride: usize) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_column_major_slice_with_stride(slice: &'a [T], nrows: Rows, ncols: Cols, col_stride: usize) -> Self {
 		from_strided_column_major_slice_assert(nrows.unbound(), ncols.unbound(), col_stride, slice.len());
 
 		unsafe { MatRef::from_raw_parts(slice.as_ptr(), nrows, ncols, 1, col_stride as isize) }
@@ -170,10 +148,7 @@ impl<'a, T, Rows: Shape, Cols: Shape> MatRef<'a, T, Rows, Cols> {
 	/// ```
 	#[inline]
 	#[track_caller]
-	pub fn from_row_major_slice(slice: &'a [T], nrows: Rows, ncols: Cols) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_row_major_slice(slice: &'a [T], nrows: Rows, ncols: Cols) -> Self {
 		MatRef::from_column_major_slice(slice, ncols, nrows).transpose()
 	}
 
@@ -182,10 +157,7 @@ impl<'a, T, Rows: Shape, Cols: Shape> MatRef<'a, T, Rows, Cols> {
 	/// rows are separated by `row_stride` elements
 	#[inline]
 	#[track_caller]
-	pub fn from_row_major_slice_with_stride(slice: &'a [T], nrows: Rows, ncols: Cols, row_stride: usize) -> Self
-	where
-		T: Sized,
-	{
+	pub fn from_row_major_slice_with_stride(slice: &'a [T], nrows: Rows, ncols: Cols, row_stride: usize) -> Self {
 		MatRef::from_column_major_slice_with_stride(slice, ncols, nrows, row_stride).transpose()
 	}
 }
@@ -229,8 +201,8 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 	/// ```
 	#[inline]
 	#[track_caller]
-	pub unsafe fn from_raw_parts(ptr: *const T, nrows: Rows, ncols: Cols, row_stride: RStride, col_stride: CStride) -> Self {
-		Self {
+	pub const unsafe fn from_raw_parts(ptr: *const T, nrows: Rows, ncols: Cols, row_stride: RStride, col_stride: CStride) -> Self {
+		Self(Ref {
 			imp: MatView {
 				ptr: NonNull::new_unchecked(ptr as *mut T),
 				nrows,
@@ -239,7 +211,7 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 				col_stride,
 			},
 			__marker: PhantomData,
-		}
+		})
 	}
 
 	/// returns a pointer to the matrix data
@@ -426,14 +398,16 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 	#[inline]
 	pub fn transpose(self) -> MatRef<'a, T, Cols, Rows, CStride, RStride> {
 		MatRef {
-			imp: MatView {
-				ptr: self.imp.ptr,
-				nrows: self.imp.ncols,
-				ncols: self.imp.nrows,
-				row_stride: self.imp.col_stride,
-				col_stride: self.imp.row_stride,
+			0: Ref {
+				imp: MatView {
+					ptr: self.imp.ptr,
+					nrows: self.imp.ncols,
+					ncols: self.imp.nrows,
+					row_stride: self.imp.col_stride,
+					col_stride: self.imp.row_stride,
+				},
+				__marker: PhantomData,
 			},
-			__marker: PhantomData,
 		}
 	}
 
@@ -494,15 +468,6 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 	pub(crate) fn at(self, row: Idx<Rows>, col: Idx<Cols>) -> &'a T {
 		assert!(all(row < self.nrows(), col < self.ncols()));
 		unsafe { self.at_unchecked(row, col) }
-	}
-
-	#[inline]
-	#[track_caller]
-	pub(crate) fn read(&self, row: Idx<Rows>, col: Idx<Cols>) -> T
-	where
-		T: Clone,
-	{
-		self.at(row, col).clone()
 	}
 
 	#[inline]
@@ -1003,59 +968,6 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 		}
 	}
 
-	/// returns a newly allocated matrix holding the cloned values of `self`
-	#[inline]
-	pub fn cloned(&self) -> Mat<T, Rows, Cols>
-	where
-		T: Clone,
-	{
-		fn imp<'M, 'N, T: Clone, RStride: Stride, CStride: Stride>(
-			this: MatRef<'_, T, Dim<'M>, Dim<'N>, RStride, CStride>,
-		) -> Mat<T, Dim<'M>, Dim<'N>> {
-			Mat::from_fn(this.nrows(), this.ncols(), |i, j| this.at(i, j).clone())
-		}
-
-		with_dim!(M, self.nrows().unbound());
-		with_dim!(N, self.ncols().unbound());
-		imp(self.as_shape(M, N)).into_shape(self.nrows(), self.ncols())
-	}
-
-	/// returns a newly allocated matrix holding the (possibly conjugated) values of `self`
-	#[inline]
-	pub fn to_owned(&self) -> Mat<T::Canonical, Rows, Cols>
-	where
-		T: Conjugate,
-	{
-		fn imp<'M, 'N, T, RStride: Stride, CStride: Stride>(
-			this: MatRef<'_, T, Dim<'M>, Dim<'N>, RStride, CStride>,
-		) -> Mat<T::Canonical, Dim<'M>, Dim<'N>>
-		where
-			T: Conjugate,
-		{
-			Mat::from_fn(this.nrows(), this.ncols(), |i, j| Conj::apply::<T>(this.at(i, j)))
-		}
-
-		with_dim!(M, self.nrows().unbound());
-		with_dim!(N, self.ncols().unbound());
-		imp(self.as_shape(M, N)).into_shape(self.nrows(), self.ncols())
-	}
-
-	#[doc(hidden)]
-	#[inline]
-	pub unsafe fn const_cast(self) -> MatMut<'a, T, Rows, Cols, RStride, CStride> {
-		MatMut::from_raw_parts_mut(self.as_ptr() as *mut T, self.nrows(), self.ncols(), self.row_stride(), self.col_stride())
-	}
-
-	/// returns a view over the matrix with a static row stride equal to `+1`, or `None` otherwise
-	#[inline]
-	pub fn try_as_col_major(self) -> Option<MatRef<'a, T, Rows, Cols, ContiguousFwd, CStride>> {
-		if self.row_stride().element_stride() == 1 {
-			Some(unsafe { MatRef::from_raw_parts(self.as_ptr(), self.nrows(), self.ncols(), ContiguousFwd, self.col_stride()) })
-		} else {
-			None
-		}
-	}
-
 	/// returns a view over the matrix with a static column stride equal to `+1`, or `None`
 	/// otherwise
 	#[inline]
@@ -1065,12 +977,6 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 		} else {
 			None
 		}
-	}
-
-	/// returns a view over `self`
-	#[inline]
-	pub fn as_ref(&self) -> MatRef<'_, T, Rows, Cols, RStride, CStride> {
-		*self
 	}
 
 	#[doc(hidden)]
@@ -1099,61 +1005,20 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 		unsafe { MatRef::from_raw_parts(self.as_ptr(), self.nrows(), self.ncols().bind(col), self.row_stride(), self.col_stride()) }
 	}
 
-	/// returns the maximum norm of `self`
+	#[doc(hidden)]
 	#[inline]
-	pub fn norm_max(&self) -> Real<T>
-	where
-		T: Conjugate,
-	{
-		linalg::reductions::norm_max::norm_max(self.canonical().as_dyn_stride().as_dyn())
+	pub unsafe fn const_cast(self) -> MatMut<'a, T, Rows, Cols, RStride, CStride> {
+		MatMut::from_raw_parts_mut(self.as_ptr() as *mut T, self.nrows(), self.ncols(), self.row_stride(), self.col_stride())
 	}
 
-	/// returns the l2 norm of `self`
+	/// returns a view over the matrix with a static row stride equal to `+1`, or `None` otherwise
 	#[inline]
-	pub fn norm_l2(&self) -> Real<T>
-	where
-		T: Conjugate,
-	{
-		linalg::reductions::norm_l2::norm_l2(self.canonical().as_dyn_stride().as_dyn())
-	}
-
-	/// returns the squared l2 norm of `self`
-	#[inline]
-	pub fn squared_norm_l2(&self) -> Real<T>
-	where
-		T: Conjugate,
-	{
-		linalg::reductions::norm_l2_sqr::norm_l2_sqr(self.canonical().as_dyn_stride().as_dyn())
-	}
-
-	/// returns the l1 norm of `self`
-	#[inline]
-	pub fn norm_l1(&self) -> Real<T>
-	where
-		T: Conjugate,
-	{
-		linalg::reductions::norm_l1::norm_l1(self.canonical().as_dyn_stride().as_dyn())
-	}
-
-	/// returns the sum of the elements of `self`
-	#[inline]
-	#[math]
-	pub fn sum(&self) -> T::Canonical
-	where
-		T: Conjugate,
-	{
-		let val = linalg::reductions::sum::sum(self.canonical().as_dyn_stride().as_dyn());
-		if try_const! { Conj::get::<T>().is_conj() } { conj(val) } else { val }
-	}
-
-	/// returns the determinant of `self`
-	#[inline]
-	#[math]
-	pub fn determinant(&self) -> T::Canonical
-	where
-		T: Conjugate,
-	{
-		linalg::reductions::determinant::determinant(self.canonical().as_dyn_stride().as_dyn())
+	pub fn try_as_col_major(self) -> Option<MatRef<'a, T, Rows, Cols, ContiguousFwd, CStride>> {
+		if self.row_stride().element_stride() == 1 {
+			Some(unsafe { MatRef::from_raw_parts(self.as_ptr(), self.nrows(), self.ncols(), ContiguousFwd, self.col_stride()) })
+		} else {
+			None
+		}
 	}
 
 	/// returns references to the element at the given index, or submatrices if either `row`
@@ -1222,13 +1087,236 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatRef<'
 	}
 }
 
+impl<
+	T,
+	Rows: Shape,
+	Cols: Shape,
+	RStride: Stride,
+	CStride: Stride,
+	Inner: for<'short> Reborrow<'short, Target = Ref<'short, T, Rows, Cols, RStride, CStride>>,
+> generic::Mat<Inner>
+{
+	/// returns a view over `self`
+	#[inline]
+	pub fn as_ref(&self) -> MatRef<'_, T, Rows, Cols, RStride, CStride> {
+		self.rb()
+	}
+
+	/// returns a newly allocated matrix holding the cloned values of `self`
+	#[inline]
+	pub fn cloned(&self) -> Mat<T, Rows, Cols>
+	where
+		T: Clone,
+	{
+		fn imp<'M, 'N, T: Clone, RStride: Stride, CStride: Stride>(
+			this: MatRef<'_, T, Dim<'M>, Dim<'N>, RStride, CStride>,
+		) -> Mat<T, Dim<'M>, Dim<'N>> {
+			Mat::from_fn(this.nrows(), this.ncols(), |i, j| this.at(i, j).clone())
+		}
+
+		let this = self.rb();
+
+		with_dim!(M, this.nrows().unbound());
+		with_dim!(N, this.ncols().unbound());
+		imp(this.as_shape(M, N)).into_shape(this.nrows(), this.ncols())
+	}
+
+	/// returns a newly allocated matrix holding the (possibly conjugated) values of `self`
+	#[inline]
+	pub fn to_owned(&self) -> Mat<T::Canonical, Rows, Cols>
+	where
+		T: Conjugate,
+	{
+		fn imp<'M, 'N, T, RStride: Stride, CStride: Stride>(
+			this: MatRef<'_, T, Dim<'M>, Dim<'N>, RStride, CStride>,
+		) -> Mat<T::Canonical, Dim<'M>, Dim<'N>>
+		where
+			T: Conjugate,
+		{
+			Mat::from_fn(this.nrows(), this.ncols(), |i, j| Conj::apply::<T>(this.at(i, j)))
+		}
+
+		let this = self.rb();
+		with_dim!(M, this.nrows().unbound());
+		with_dim!(N, this.ncols().unbound());
+		imp(this.as_shape(M, N)).into_shape(this.nrows(), this.ncols())
+	}
+
+	/// returns the maximum norm of `self`
+	#[inline]
+	pub fn norm_max(&self) -> Real<T>
+	where
+		T: Conjugate,
+	{
+		linalg::reductions::norm_max::norm_max(self.rb().canonical().as_dyn_stride().as_dyn())
+	}
+
+	/// returns the l2 norm of `self`
+	#[inline]
+	pub fn norm_l2(&self) -> Real<T>
+	where
+		T: Conjugate,
+	{
+		linalg::reductions::norm_l2::norm_l2(self.rb().canonical().as_dyn_stride().as_dyn())
+	}
+
+	/// returns the squared l2 norm of `self`
+	#[inline]
+	pub fn squared_norm_l2(&self) -> Real<T>
+	where
+		T: Conjugate,
+	{
+		linalg::reductions::norm_l2_sqr::norm_l2_sqr(self.rb().canonical().as_dyn_stride().as_dyn())
+	}
+
+	/// returns the l1 norm of `self`
+	#[inline]
+	pub fn norm_l1(&self) -> Real<T>
+	where
+		T: Conjugate,
+	{
+		linalg::reductions::norm_l1::norm_l1(self.rb().canonical().as_dyn_stride().as_dyn())
+	}
+
+	/// returns the sum of the elements of `self`
+	#[inline]
+	#[math]
+	pub fn sum(&self) -> T::Canonical
+	where
+		T: Conjugate,
+	{
+		let val = linalg::reductions::sum::sum(self.rb().canonical().as_dyn_stride().as_dyn());
+		if try_const! { Conj::get::<T>().is_conj() } { conj(val) } else { val }
+	}
+
+	/// returns the determinant of `self`
+	#[inline]
+	#[math]
+	pub fn determinant(&self) -> T::Canonical
+	where
+		T: Conjugate,
+	{
+		let det = linalg::reductions::determinant::determinant(self.rb().canonical().as_dyn_stride().as_dyn());
+		if const { T::IS_CANONICAL } { det } else { conj(det) }
+	}
+
+	/// kronecker product of two matrices
+	///
+	/// the kronecker product of two matrices $A$ and $B$ is a block matrix
+	/// $B$ with the following structure:
+	///
+	/// ```text
+	/// C = [ a[(0, 0)] * B    , a[(0, 1)] * B    , ... , a[(0, n-1)] * B    ]
+	///     [ a[(1, 0)] * B    , a[(1, 1)] * B    , ... , a[(1, n-1)] * B    ]
+	///     [ ...              , ...              , ... , ...              ]
+	///     [ a[(m-1, 0)] * B  , a[(m-1, 1)] * B  , ... , a[(m-1, n-1)] * B  ]
+	/// ```
+	///
+	/// # panics
+	///
+	/// panics if `dst` does not have the correct dimensions. the dimensions
+	/// of `dst` must be `A.nrows() * B.nrows()` by `A.ncols() * B.ncols()`.
+	///
+	/// # example
+	///
+	/// ```
+	/// use faer::linalg::kron::kron;
+	/// use faer::{Mat, mat};
+	///
+	/// let a = mat![[1.0, 2.0], [3.0, 4.0]];
+	/// let b = mat![[0.0, 5.0], [6.0, 7.0]];
+	/// let c = mat![
+	/// 	[0.0, 5.0, 0.0, 10.0],
+	/// 	[6.0, 7.0, 12.0, 14.0],
+	/// 	[0.0, 15.0, 0.0, 20.0],
+	/// 	[18.0, 21.0, 24.0, 28.0],
+	/// ];
+	/// let mut dst = Mat::zeros(4, 4);
+	/// kron(dst.as_mut(), a.as_ref(), b.as_ref());
+	/// assert_eq!(dst, c);
+	/// ```
+	#[inline]
+	pub fn kron(&self, rhs: impl AsMatRef<T: Conjugate<Canonical = T::Canonical>>) -> Mat<T::Canonical>
+	where
+		T: Conjugate,
+	{
+		fn imp<T: ComplexField>(lhs: MatRef<'_, impl Conjugate<Canonical = T>>, rhs: MatRef<'_, impl Conjugate<Canonical = T>>) -> Mat<T> {
+			let mut out = Mat::zeros(lhs.nrows() * rhs.nrows(), lhs.ncols() * rhs.ncols());
+			linalg::kron::kron(out.rb_mut(), lhs, rhs);
+			out
+		}
+
+		imp(self.rb().as_dyn().as_dyn_stride(), rhs.as_mat_ref().as_dyn().as_dyn_stride())
+	}
+
+	/// returns `true` if all of the elements of `self` are finite.
+	/// otherwise returns `false`.
+	#[inline]
+	pub fn is_all_finite(&self) -> bool
+	where
+		T: Conjugate,
+	{
+		fn imp<T: ComplexField>(A: MatRef<'_, T>) -> bool {
+			with_dim!({
+				let M = A.nrows();
+				let N = A.ncols();
+			});
+
+			let A = A.as_shape(M, N);
+
+			for j in N.indices() {
+				for i in M.indices() {
+					if !is_finite(&A[(i, j)]) {
+						return false;
+					}
+				}
+			}
+
+			true
+		}
+
+		imp(self.rb().as_dyn().as_dyn_stride().canonical())
+	}
+
+	/// returns `true` if any of the elements of `self` is `NaN`.
+	/// otherwise returns `false`.
+	#[inline]
+	pub fn has_nan(&self) -> bool
+	where
+		T: Conjugate,
+	{
+		fn imp<T: ComplexField>(A: MatRef<'_, T>) -> bool {
+			with_dim!({
+				let M = A.nrows();
+				let N = A.ncols();
+			});
+
+			let A = A.as_shape(M, N);
+
+			for j in N.indices() {
+				for i in M.indices() {
+					if is_nan(&A[(i, j)]) {
+						return true;
+					}
+				}
+			}
+
+			false
+		}
+
+		imp(self.rb().as_dyn().as_dyn_stride().canonical())
+	}
+}
+
 impl<'a, T, Dim: Shape, RStride: Stride, CStride: Stride> MatRef<'a, T, Dim, Dim, RStride, CStride> {
 	/// returns the diagonal of the matrix
 	#[inline]
 	pub fn diagonal(self) -> DiagRef<'a, T, Dim, isize> {
 		let k = Ord::min(self.nrows(), self.ncols());
 		DiagRef {
-			inner: unsafe { ColRef::from_raw_parts(self.as_ptr(), k, self.row_stride().element_stride() + self.col_stride().element_stride()) },
+			0: crate::diag::Ref {
+				inner: unsafe { ColRef::from_raw_parts(self.as_ptr(), k, self.row_stride().element_stride() + self.col_stride().element_stride()) },
+			},
 		}
 	}
 }
@@ -1286,18 +1374,8 @@ impl<'COLS, 'a, T, Rows: Shape, RStride: Stride, CStride: Stride> MatRef<'a, T, 
 	}
 }
 
-impl<T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> Index<(Idx<Rows>, Idx<Cols>)> for MatRef<'_, T, Rows, Cols, RStride, CStride> {
-	type Output = T;
-
-	#[inline]
-	#[track_caller]
-	fn index(&self, (row, col): (Idx<Rows>, Idx<Cols>)) -> &Self::Output {
-		self.at(row, col)
-	}
-}
-
 impl<'a, T: core::fmt::Debug, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> core::fmt::Debug
-	for MatRef<'a, T, Rows, Cols, RStride, CStride>
+	for Ref<'a, T, Rows, Cols, RStride, CStride>
 {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		fn imp<'M, 'N, T: core::fmt::Debug>(this: MatRef<'_, T, Dim<'M>, Dim<'N>>, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1309,9 +1387,11 @@ impl<'a, T: core::fmt::Debug, Rows: Shape, Cols: Shape, RStride: Stride, CStride
 			write!(f, "]")
 		}
 
-		with_dim!(M, self.nrows().unbound());
-		with_dim!(N, self.ncols().unbound());
-		imp(self.as_shape(M, N).as_dyn_stride(), f)
+		let this = generic::Mat::from_inner_ref(self);
+
+		with_dim!(M, this.nrows().unbound());
+		with_dim!(N, this.ncols().unbound());
+		imp(this.as_shape(M, N).as_dyn_stride(), f)
 	}
 }
 
@@ -1377,13 +1457,9 @@ where
 	/// # Examples
 	///
 	/// ```
-	/// use faer::{mat, Mat};
+	/// use faer::{Mat, mat};
 	///
-	/// let m = mat![
-	///     [1.0, 5.0, 3.0],
-	///     [4.0, 2.0, 9.0],
-	///     [7.0, 8.0, 6.0],
-	/// ];
+	/// let m = mat![[1.0, 5.0, 3.0], [4.0, 2.0, 9.0], [7.0, 8.0, 6.0],];
 	///
 	/// assert_eq!(m.max(), Some(9.0));
 	///
@@ -1403,13 +1479,9 @@ where
 	/// # Examples
 	///
 	/// ```
-	/// use faer::{mat, Mat};
+	/// use faer::{Mat, mat};
 	///
-	/// let m = mat![
-	///     [1.0, 5.0, 3.0],
-	///     [4.0, 2.0, 9.0],
-	///     [7.0, 8.0, 6.0],
-	/// ];
+	/// let m = mat![[1.0, 5.0, 3.0], [4.0, 2.0, 9.0], [7.0, 8.0, 6.0],];
 	///
 	/// assert_eq!(m.min(), Some(1.0));
 	///

@@ -1,49 +1,40 @@
-use super::RowIndex;
-use crate::internal_prelude::*;
+use super::*;
 use crate::utils::bound::{Array, Dim, Partition};
 use crate::{ContiguousFwd, Idx, IdxInc};
 use equator::{assert, debug_assert};
 use faer_traits::Real;
 
-/// immutable view over a row vector, similar to an immutable reference to a strided
-/// [prim@slice]
-///
-/// # note
-///
-/// unlike a slice, the data pointed to by `RowRef<'_, T>` is allowed to be partially or fully
-/// uninitialized under certain conditions. in this case, care must be taken to not perform any
-/// operations that read the uninitialized values, or form references to them, either directly or
-/// indirectly through any of the numerical library routines, unless it is explicitly permitted
-pub struct RowRef<'a, T, Cols = usize, CStride = isize> {
+/// see [`super::RowRef`]
+pub struct Ref<'a, T, Cols = usize, CStride = isize> {
 	pub(crate) trans: ColRef<'a, T, Cols, CStride>,
 }
 
-impl<T, Rows: Copy, CStride: Copy> Copy for RowRef<'_, T, Rows, CStride> {}
-impl<T, Rows: Copy, CStride: Copy> Clone for RowRef<'_, T, Rows, CStride> {
+impl<T, Rows: Copy, CStride: Copy> Copy for Ref<'_, T, Rows, CStride> {}
+impl<T, Rows: Copy, CStride: Copy> Clone for Ref<'_, T, Rows, CStride> {
 	#[inline]
 	fn clone(&self) -> Self {
 		*self
 	}
 }
 
-impl<'short, T, Rows: Copy, CStride: Copy> Reborrow<'short> for RowRef<'_, T, Rows, CStride> {
-	type Target = RowRef<'short, T, Rows, CStride>;
+impl<'short, T, Rows: Copy, CStride: Copy> Reborrow<'short> for Ref<'_, T, Rows, CStride> {
+	type Target = Ref<'short, T, Rows, CStride>;
 
 	#[inline]
 	fn rb(&'short self) -> Self::Target {
 		*self
 	}
 }
-impl<'short, T, Rows: Copy, CStride: Copy> ReborrowMut<'short> for RowRef<'_, T, Rows, CStride> {
-	type Target = RowRef<'short, T, Rows, CStride>;
+impl<'short, T, Rows: Copy, CStride: Copy> ReborrowMut<'short> for Ref<'_, T, Rows, CStride> {
+	type Target = Ref<'short, T, Rows, CStride>;
 
 	#[inline]
 	fn rb_mut(&'short mut self) -> Self::Target {
 		*self
 	}
 }
-impl<'a, T, Rows: Copy, CStride: Copy> IntoConst for RowRef<'a, T, Rows, CStride> {
-	type Target = RowRef<'a, T, Rows, CStride>;
+impl<'a, T, Rows: Copy, CStride: Copy> IntoConst for Ref<'a, T, Rows, CStride> {
+	type Target = Ref<'a, T, Rows, CStride>;
 
 	#[inline]
 	fn into_const(self) -> Self::Target {
@@ -51,8 +42,24 @@ impl<'a, T, Rows: Copy, CStride: Copy> IntoConst for RowRef<'a, T, Rows, CStride
 	}
 }
 
-unsafe impl<T: Sync, Rows: Sync, CStride: Sync> Sync for RowRef<'_, T, Rows, CStride> {}
-unsafe impl<T: Sync, Rows: Send, CStride: Send> Send for RowRef<'_, T, Rows, CStride> {}
+unsafe impl<T: Sync, Rows: Sync, CStride: Sync> Sync for Ref<'_, T, Rows, CStride> {}
+unsafe impl<T: Sync, Rows: Send, CStride: Send> Send for Ref<'_, T, Rows, CStride> {}
+
+impl<'a, T> RowRef<'a, T> {
+	/// creates a row view over the given element
+	#[inline]
+	pub fn from_ref(value: &'a T) -> Self {
+		unsafe { RowRef::from_raw_parts(value as *const T, 1, 1) }
+	}
+
+	/// creates a `RowRef` from slice views over the row vector data, the result has the same
+	/// number of columns as the length of the input slice
+	#[inline]
+	pub fn from_slice(slice: &'a [T]) -> Self {
+		let len = slice.len();
+		unsafe { Self::from_raw_parts(slice.as_ptr(), len, 1) }
+	}
+}
 
 impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	/// creates a `RowRef` from pointers to the column vector data, number of rows, and row stride
@@ -62,9 +69,11 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	/// [`MatRef::from_raw_parts(ptr, 1, ncols, 0, col_stride)`]
 	#[inline(always)]
 	#[track_caller]
-	pub unsafe fn from_raw_parts(ptr: *const T, ncols: Cols, col_stride: CStride) -> Self {
+	pub const unsafe fn from_raw_parts(ptr: *const T, ncols: Cols, col_stride: CStride) -> Self {
 		Self {
-			trans: ColRef::from_raw_parts(ptr, ncols, col_stride),
+			0: Ref {
+				trans: ColRef::from_raw_parts(ptr, ncols, col_stride),
+			},
 		}
 	}
 
@@ -154,7 +163,9 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 		T: Conjugate,
 	{
 		RowRef {
-			trans: self.trans.conjugate(),
+			0: Ref {
+				trans: self.trans.conjugate(),
+			},
 		}
 	}
 
@@ -165,7 +176,9 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 		T: Conjugate,
 	{
 		RowRef {
-			trans: self.trans.canonical(),
+			0: Ref {
+				trans: self.trans.canonical(),
+			},
 		}
 	}
 
@@ -225,7 +238,9 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	#[inline]
 	pub fn reverse_cols(self) -> RowRef<'a, T, Cols, CStride::Rev> {
 		RowRef {
-			trans: self.trans.reverse_rows(),
+			0: Ref {
+				trans: self.trans.reverse_rows(),
+			},
 		}
 	}
 
@@ -320,14 +335,10 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	#[doc(hidden)]
 	pub unsafe fn const_cast(self) -> RowMut<'a, T, Cols, CStride> {
 		RowMut {
-			trans: self.trans.const_cast(),
+			0: Mut {
+				trans: self.trans.const_cast(),
+			},
 		}
-	}
-
-	/// returns a view over `self`
-	#[inline]
-	pub fn as_ref(&self) -> RowRef<'_, T, Cols, CStride> {
-		*self
 	}
 
 	/// returns a matrix view over `self`
@@ -339,12 +350,22 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	/// interprets the row as a diagonal matrix
 	#[inline]
 	pub fn as_diagonal(self) -> DiagRef<'a, T, Cols, CStride> {
-		DiagRef { inner: self.trans }
+		DiagRef {
+			0: crate::diag::Ref { inner: self.trans },
+		}
 	}
 
 	#[inline]
 	pub(crate) fn __at(self, i: Idx<Cols>) -> &'a T {
 		self.at(i)
+	}
+}
+
+impl<T, Cols: Shape, CStride: Stride, Inner: for<'short> Reborrow<'short, Target = Ref<'short, T, Cols, CStride>>> generic::Row<Inner> {
+	/// returns a view over `self`
+	#[inline]
+	pub fn as_ref(&self) -> RowRef<'_, T, Cols, CStride> {
+		self.rb()
 	}
 
 	/// returns the maximum norm of `self`
@@ -392,13 +413,48 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 		self.rb().as_mat().sum()
 	}
 
+	/// see [`Mat::kron`]
+	#[inline]
+	pub fn kron(&self, rhs: impl AsMatRef<T: Conjugate<Canonical = T::Canonical>>) -> Mat<T::Canonical>
+	where
+		T: Conjugate,
+	{
+		fn imp<T: ComplexField>(lhs: MatRef<impl Conjugate<Canonical = T>>, rhs: MatRef<impl Conjugate<Canonical = T>>) -> Mat<T> {
+			let mut out = Mat::zeros(lhs.nrows() * rhs.nrows(), lhs.ncols() * rhs.ncols());
+			linalg::kron::kron(out.rb_mut(), lhs, rhs);
+			out
+		}
+
+		imp(self.rb().as_mat().as_dyn().as_dyn_stride(), rhs.as_mat_ref().as_dyn().as_dyn_stride())
+	}
+
+	/// returns `true` if all of the elements of `self` are finite.
+	/// otherwise returns `false`.
+	#[inline]
+	pub fn is_all_finite(&self) -> bool
+	where
+		T: Conjugate,
+	{
+		self.rb().transpose().is_all_finite()
+	}
+
+	/// returns `true` if any of the elements of `self` is `NaN`.
+	/// otherwise returns `false`.
+	#[inline]
+	pub fn has_nan(&self) -> bool
+	where
+		T: Conjugate,
+	{
+		self.rb().transpose().has_nan()
+	}
+
 	/// returns a newly allocated row holding the cloned values of `self`
 	#[inline]
 	pub fn cloned(&self) -> Row<T, Cols>
 	where
 		T: Clone,
 	{
-		self.transpose().cloned().into_transpose()
+		self.rb().transpose().cloned().into_transpose()
 	}
 
 	/// returns a newly allocated row holding the (possibly conjugated) values of `self`
@@ -407,7 +463,7 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowRef<'a, T, Cols, CStride> {
 	where
 		T: Conjugate,
 	{
-		self.transpose().to_owned().into_transpose()
+		self.rb().transpose().to_owned().into_transpose()
 	}
 }
 
@@ -439,7 +495,7 @@ impl<'COLS, 'a, T, CStride: Stride> RowRef<'a, T, Dim<'COLS>, CStride> {
 	}
 }
 
-impl<T: core::fmt::Debug, Cols: Shape, CStride: Stride> core::fmt::Debug for RowRef<'_, T, Cols, CStride> {
+impl<T: core::fmt::Debug, Cols: Shape, CStride: Stride> core::fmt::Debug for Ref<'_, T, Cols, CStride> {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		fn imp<T: core::fmt::Debug>(f: &mut core::fmt::Formatter<'_>, this: RowRef<'_, T, Dim<'_>>) -> core::fmt::Result {
 			f.debug_list()
@@ -447,8 +503,10 @@ impl<T: core::fmt::Debug, Cols: Shape, CStride: Stride> core::fmt::Debug for Row
 				.finish()
 		}
 
-		with_dim!(N, self.ncols().unbound());
-		imp(f, self.as_col_shape(N).as_dyn_stride())
+		let this = generic::Row::from_inner_ref(self);
+
+		with_dim!(N, this.ncols().unbound());
+		imp(f, this.as_col_shape(N).as_dyn_stride())
 	}
 }
 
