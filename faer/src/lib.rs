@@ -330,6 +330,40 @@ macro_rules! zip {
     };
 }
 
+/// expands to the type of zipped items.
+///
+/// # example
+/// ```
+/// use faer::{Mat, Zip, mat, unzip, zip};
+///
+/// let nrows = 2;
+/// let ncols = 3;
+///
+/// let a = mat![[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]];
+/// let b = mat![[7.0, 9.0, 11.0], [8.0, 10.0, 12.0]];
+/// let mut sum = Mat::<f64>::zeros(nrows, ncols);
+///
+/// zip!(&mut sum, &a, &b).for_each(|unzip!(sum, a, b): Zip!(&mut f64, &f64, &f64)| {
+/// 	*sum = a + b;
+/// });
+///
+/// for i in 0..nrows {
+/// 	for j in 0..ncols {
+/// 		assert_eq!(sum[(i, j)], a[(i, j)] + b[(i, j)]);
+/// 	}
+/// }
+/// ```
+#[macro_export]
+macro_rules! Zip {
+    ($head: ty $(,)?) => {
+        $crate::linalg::zip::Last::<$head>
+    };
+
+    ($head: ty, $($tail: ty),* $(,)?) => {
+        $crate::linalg::zip::Zip::<$head, $crate::Zip!($($tail,)*)>
+    };
+}
+
 /// used to undo the zipping by the [`zip!`] macro.
 ///
 /// # example
@@ -1286,4 +1320,9 @@ mod sort;
 
 pub extern crate dyn_stack;
 pub extern crate faer_traits as traits;
+pub extern crate num_complex as complex;
 pub extern crate reborrow;
+
+#[cfg(feature = "rand")]
+#[cfg_attr(docs_rs, doc(cfg(feature = "rand")))]
+pub extern crate rand;

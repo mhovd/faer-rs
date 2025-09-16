@@ -1158,7 +1158,7 @@ impl<T: ComplexField> Svd<T> {
 		let S = self.S();
 		let par = get_global_parallelism();
 		let stack = &mut MemBuffer::new(linalg::svd::pseudoinverse_from_svd_scratch::<T>(self.nrows(), self.ncols(), par));
-		let mut pinv = Mat::zeros(self.nrows(), self.ncols());
+		let mut pinv = Mat::zeros(self.ncols(), self.nrows());
 		linalg::svd::pseudoinverse_from_svd(pinv.rb_mut(), S, U, V, par, MemStack::new(stack));
 		pinv
 	}
@@ -1218,6 +1218,17 @@ impl<T: ComplexField> SelfAdjointEigen<T> {
 	/// returns the factor $S$
 	pub fn S(&self) -> DiagRef<'_, T> {
 		self.S.as_ref()
+	}
+
+	/// returns the pseudoinverse of the original matrix $A$.
+	pub fn pseudoinverse(&self) -> Mat<T> {
+		let U = self.U();
+		let S = self.S();
+		let par = get_global_parallelism();
+		let stack = &mut MemBuffer::new(linalg::evd::pseudoinverse_from_self_adjoint_evd_scratch::<T>(self.nrows(), par));
+		let mut pinv = Mat::zeros(self.ncols(), self.nrows());
+		linalg::evd::pseudoinverse_from_self_adjoint_evd(pinv.rb_mut(), S, U, par, MemStack::new(stack));
+		pinv
 	}
 }
 
